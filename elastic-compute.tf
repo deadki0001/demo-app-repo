@@ -16,34 +16,11 @@ resource "aws_instance" "demo_app_server" {
 
 
   // User data scrippt to ensure our image pushed via ECR is utlized on our EC2 Instance
-  user_data = <<-EOF
-      #!/bin/bash
-      apt-get update -y
-      apt-get install -y awscli docker.io
-      systemctl enable docker
-      systemctl start docker
+  user_data = templatefile("${path.module}/user_data.sh", {
+    DB_HOST = aws_db_instance.mysql.address
+    DB_NAME = aws_db_instance.mysql.db_name
+  })
 
-      # Get AWS account ID for ECR repository URL
-      AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-      AWS_REGION="us-east-1"
-
-      # Get RDS endpoint and credentials
-      DB_HOST="${aws_db_instance.mysql.address}"
-      DB_NAME="${aws_db_instance.mysql.db_name}"
-      DB_USER="admin" # Default master username
-      DB_PASSWORD=$(aws secretsmanager get-secret-value --secret-id ${aws_db_instance.mysql.master_user_secret[0].secret_arn} --query SecretString --output text | jq -r '.password')
-
-      # Login to ECR and pull the latest image
-      aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com
-
-      # Run the container with environment variables for database connection
-      docker run -d -p 80:80 \
-        -e DB_HOST=$DB_HOST \
-        -e DB_NAME=$DB_NAME \
-        -e DB_USER=$DB_USER \
-        -e DB_PASSWORD=$DB_PASSWORD \
-        $AWS_ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com/demo-app-images:latest
-      EOF
 
   tags = {
     Name = "demo_app_server"
