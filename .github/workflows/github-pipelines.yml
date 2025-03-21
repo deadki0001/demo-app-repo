@@ -1,86 +1,84 @@
 name: Source Stage
 
 on:
-    push:
-        branches: 
-            - main
+  push:
+    branches: 
+      - main
 
 # This part of the pipeline we use a Ubuntu / Linux based Runner to host a container, the terraform light image, 
 # Which is a condensed version of Linux with Terraform pre-packaged into it.             
 jobs:
-    terraform-plan:
-        name: Terraform Plan
-        runs-on: ubuntu-22.04     
-        container:
-          image: hashicorp/terraform:1.5.7          # Its always best to use a stable version of terraform as latest versions could cause issues within your pipeline in future. 
-        steps:
-          - name: Checkout Repository
-            uses: actions/checkout@v4        
+  terraform-plan:
+    name: Terraform Plan
+    runs-on: ubuntu-22.04     
+    container:
+      image: hashicorp/terraform:1.5.7          # It's always best to use a stable version of terraform as latest versions could cause issues within your pipeline in future. 
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4         # Checkout the code from the repository.
 
-# We need to programmatically authenticate to AWS to ensure Terraform knows where to deploy the resources we have prepared.
-# Secondly, we need to ensure that the programmatic user is always assigned permissions using the principle of least privilege. 
-          - name: Configure AWS Credentials
-            env:
-              AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-              AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-              AWS_REGION: ${{ secrets.AWS_REGION }}
-            run: |
-              echo "AWS credentials configured" 
+      # We need to programmatically authenticate to AWS to ensure Terraform knows where to deploy the resources we have prepared.
+      # Secondly, we need to ensure that the programmatic user is always assigned permissions using the principle of least privilege. 
+      - name: Configure AWS Credentials
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+        run: |
+          echo "AWS credentials configured"  # Programmatically authenticate with AWS using GitHub secrets.
 
-# Here we initialize terraform and use the s3 bucket to manage our state and also call upon our DynamoDB table to perform session management in terms of state locking.
-# We then ask Terraform to perform a plan, which should provide us with a summary of the resources it's about to create.            
-          - name: Initialize Terraform
-            run: |
-              terraform init \
-                -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
-                -backend-config="region=${{ secrets.AWS_REGION }}" \
-                -backend-config="dynamodb_table=${{ secrets.TF_STATE_LOCK_TABLE }}"
+      # Here we initialize terraform and use the s3 bucket to manage our state and also call upon our DynamoDB table to perform session management in terms of state locking.
+      # We then ask Terraform to perform a plan, which should provide us with a summary of the resources it's about to create.            
+      - name: Initialize Terraform
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="region=${{ secrets.AWS_REGION }}" \
+            -backend-config="dynamodb_table=${{ secrets.TF_STATE_LOCK_TABLE }}"  # Initialize Terraform with backend configurations.
 
-          - name: Terraform Plan
-            run: terraform plan -out=tfplan            
+      - name: Terraform Plan
+        run: terraform plan -out=tfplan  # Generate a Terraform execution plan.
 
-# Manual Approval Stage - After we review the resources which are being created.
-    manual-approval:
-        name: Manual Approval
-        needs: terraform-plan
-        runs-on: ubuntu-22.04
-        steps:
-          - name: Wait for Manual Approval
-            uses: hmarr/auto-approve-action@v3
-            with:
-              github-token: ${{ secrets.GITHUB_TOKEN }}
-            env:
-              GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  manual-approval:
+    name: Manual Approval
+    needs: terraform-plan
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Wait for Manual Approval
+        uses: hmarr/auto-approve-action@v3
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # Manual approval required before proceeding to apply.
 
-# Approval Stage - After we review the resources in our Terraform plan, we now create the resources within our AWS Account.
-    terraform-apply:
-        name: Terraform Apply
-        needs: manual-approval
-        runs-on: ubuntu-22.04
-        container:
-          image: hashicorp/terraform:1.5.7
-        steps:
-          - name: Checkout Repository
-            uses: actions/checkout@v4
+  terraform-apply:
+    name: Terraform Apply
+    needs: manual-approval
+    runs-on: ubuntu-22.04
+    container:
+      image: hashicorp/terraform:1.5.7  # Stable Terraform version.
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4  # Checkout the code again to ensure the latest repository content is used.
 
-# We need to programmatically authenticate to AWS to ensure Terraform knows where to deploy the resources we have prepared.
-# Secondly, we need to ensure that the programmatic user is always assigned permissions using the principle of least privilege. 
-          - name: Configure AWS Credentials
-            env:
-              AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-              AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-              AWS_REGION: ${{ secrets.AWS_REGION }}
-            run: |
-              echo "AWS credentials configured"
+      # We need to programmatically authenticate to AWS to ensure Terraform knows where to deploy the resources we have prepared.
+      # Secondly, we need to ensure that the programmatic user is always assigned permissions using the principle of least privilege. 
+      - name: Configure AWS Credentials
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+        run: |
+          echo "AWS credentials configured"  # Authenticate with AWS again for applying changes.
 
-# Here we initialize terraform and use the s3 bucket to manage our state and also call upon our DynamoDB table to perform session management in terms of state locking.
-          - name: Initialize Terraform
-            run: |
-              terraform init \
-                -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
-                -backend-config="region=${{ secrets.AWS_REGION }}" \
-                -backend-config="dynamodb_table=${{ secrets.TF_STATE_LOCK_TABLE }}"
+      # Here we initialize terraform and use the s3 bucket to manage our state and also call upon our DynamoDB table to perform session management in terms of state locking.
+      - name: Initialize Terraform
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="region=${{ secrets.AWS_REGION }}" \
+            -backend-config="dynamodb_table=${{ secrets.TF_STATE_LOCK_TABLE }}"  # Initialize with the same backend config to manage state and locking.
 
-# Finally, we apply the Terraform changes to create the resources in our AWS account.
-          - name: Apply Terraform Changes
-            run: terraform apply -auto-approve tfplan
+      # Finally, we apply the Terraform changes to create the resources in our AWS account.
+      - name: Apply Terraform Changes
+        run: terraform apply -auto-approve tfplan  # Apply the Terraform plan to create resources in AWS.
