@@ -20,12 +20,13 @@ jobs:
       # We need to programmatically authenticate to AWS to ensure Terraform knows where to deploy the resources we have prepared.
       # Secondly, we need to ensure that the programmatic user is always assigned permissions using the principle of least privilege. 
       - name: Configure AWS Credentials
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_REGION: ${{ secrets.AWS_REGION }}
-        run: |
-          echo "AWS credentials configured" 
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+          run: |
+            echo "AWS credentials configured" 
 
       # Here we initialize terraform and use the s3 bucket to manage our state and also call upon our DynamoDB table to perform session management in terms of state locking.
       # We then ask Terraform to perform a plan, which should provide us with a summary of the resources it's about to create.            
@@ -67,13 +68,14 @@ jobs:
       # We need to programmatically authenticate to AWS to ensure Terraform knows where to deploy the resources we have prepared.
       # Secondly, we need to ensure that the programmatic user is always assigned permissions using the principle of least privilege. 
       - name: Configure AWS Credentials
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_REGION: ${{ secrets.AWS_REGION }}
-        run: |
-          echo "AWS credentials configured"  # Authenticate with AWS again for applying changes.
-
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+          run: |
+            echo "AWS credentials configured" 
+            
       # Here we initialize terraform and use the s3 bucket to manage our state and also call upon our DynamoDB table to perform session management in terms of state locking.
       - name: Initialize Terraform
         run: |
