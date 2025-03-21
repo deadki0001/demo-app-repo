@@ -1,4 +1,4 @@
-name: Source Stage
+name: Source & Build Stages
 
 on:
   push:
@@ -16,11 +16,40 @@ on:
           - apply
           - destroy
 
-# This workflow uses a Ubuntu/Linux based Runner to host a container, the terraform light image, 
-# which is a condensed version of Linux with Terraform pre-packaged into it.
 jobs:
+  build-and-push:
+    name: Build and Push to ECR
+    runs-on: ubuntu-latest
+    # Only run this job when needed (e.g., when applying or when Docker files change)
+    if: github.event.inputs.action == 'apply' || github.event_name == 'push'
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, Tag, and Push Image to ECR
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: demo-app-images
+          IMAGE_TAG: latest
+        run: |
+          cd docker
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+
   terraform-plan:
     name: Terraform Plan
+    needs: [build-and-push]  # This ensures Docker image is built first
     runs-on: ubuntu-22.04
     if: github.event_name == 'push' || github.event.inputs.action == 'plan' || github.event.inputs.action == 'apply'
     container:
@@ -157,4 +186,4 @@ jobs:
         run: terraform plan -destroy -out=tfdestroyplan
   
       - name: Destroy Infrastructure
-        run: terraform apply -auto-approve tfdestroyplan        
+        run: terraform apply -auto-approve tfdestroyplan
