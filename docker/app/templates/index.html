@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>AWS Demo Application</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .status {
+            padding: 10px;
+            border-radius: 5px;
+            margin-bottom: 10px;
+        }
+        .success {
+            background-color: #d4edda;
+            color: #155724;
+        }
+        .error {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+    </style>
+</head>
+<body>
+    <h1>AWS Demo Application</h1>
+    
+    <h2>Server Information</h2>
+    <p>Server IP: {{ server_ip }}</p>
+    <p>Date and Time: {{ current_time }}</p>
+    
+    <h2>Database Connection Test</h2>
+    {% if db_success %}
+        <div class="status success">Successfully connected to the database!</div>
+        <p>This page has been visited {{ visit_count }} times.</p>
+        
+        {% if recent_visits %}
+            <h3>Recent Visits</h3>
+            <ul>
+            {% for visit in recent_visits %}
+                <li>Time: {{ visit.visit_time }} - IP: {{ visit.visitor_ip }}</li>
+            {% endfor %}
+            </ul>
+        {% endif %}
+    {% else %}
+        <div class="status error">Database connection error: {{ error }}</div>
+    {% endif %}
+</body>
+</html>

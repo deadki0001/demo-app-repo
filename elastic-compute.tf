@@ -15,15 +15,35 @@ resource "aws_instance" "demo_app_server" {
   associate_public_ip_address = true                                               // We need our server to be accessible from the Internet, so we are using a boolean of true as to get AWS to provide us with a Public IP We can source the server from. 
 
 
-  // The above is a simple user data script, we use this to automate the process of installing Nginx and enable Nginx's services.
+  // User data scrippt to ensure our image pushed via ECR is utlized on our EC2 Instance
   user_data = <<-EOF
-                #!/bin/bash
-                apt-get update -y
-                apt-get install -y nginx
-                echo "<h1>Welcome to my demo application</h1>" > /var/www/html/index.nginx-debian.html
-                systemctl enable nginx
-                systemctl start nginx
-                EOF
+      #!/bin/bash
+      apt-get update -y
+      apt-get install -y awscli docker.io
+      systemctl enable docker
+      systemctl start docker
+
+      # Get AWS account ID for ECR repository URL
+      AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+      AWS_REGION=${aws_db_instance.mysql.region}
+
+      # Get RDS endpoint and credentials
+      DB_HOST="${aws_db_instance.mysql.address}"
+      DB_NAME="${aws_db_instance.mysql.db_name}"
+      DB_USER="admin" # Default master username
+      DB_PASSWORD=$(aws secretsmanager get-secret-value --secret-id ${aws_db_instance.mysql.master_user_secret[0].secret_arn} --query SecretString --output text | jq -r '.password')
+
+      # Login to ECR and pull the latest image
+      aws ecr get-login-password --region ${aws_db_instance.mysql.region} | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.${aws_db_instance.mysql.region}.amazonaws.com
+
+      # Run the container with environment variables for database connection
+      docker run -d -p 80:80 \
+        -e DB_HOST=$DB_HOST \
+        -e DB_NAME=$DB_NAME \
+        -e DB_USER=$DB_USER \
+        -e DB_PASSWORD=$DB_PASSWORD \
+        $AWS_ACCOUNT_ID.dkr.ecr.${aws_db_instance.mysql.region}.amazonaws.com/demo-app-images:latest
+      EOF
 
   tags = {
     Name = "demo_app_server"
