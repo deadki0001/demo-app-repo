@@ -51,6 +51,16 @@ resource "aws_subnet" "demo_private_subnet_1" {
   }
 }
 
+resource "aws_subnet" "demo_private_subnet_2" {
+  vpc_id            = aws_vpc.demo_application_vpc.id
+  availability_zone = "us-east-1a"
+  cidr_block        = "10.0.3.0/24"
+
+  tags = {
+    Name = "demo_private_subnet_1"
+  }
+}
+
 // Private subnets are used to communicate locally within a given network, they have various use cases.
 // A subnet characteristics is simply defined on where it has direct access to the internet using an Internet Gateway.
 // More on Internet Gateways below.

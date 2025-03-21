@@ -46,7 +46,7 @@ data "aws_secretsmanager_secret_version" "db_secret_version" {
 
 resource "aws_db_subnet_group" "db_subnet_group" {
   name       = "demo-db-subnet-group"
-  subnet_ids = [aws_subnet.demo_private_subnet_1.id] // Associating RDS with the Private Subnet
+  subnet_ids = [aws_subnet.demo_private_subnet_1.id, aws_subnet.demo_private_subnet_2.id] // Associating RDS with the Private Subnet
   tags = {
     Name = "Demo DB Subnet Group"
   }
