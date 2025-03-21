@@ -129,7 +129,6 @@ jobs:
     if: github.event.inputs.action == 'destroy'
     environment: 
       name: production
-      # URL that will show in the GitHub UI for this environment
       url: https://github.com/${{ github.repository }}/actions/workflows/terraform.yml
     container:
       image: hashicorp/terraform:1.5.7
