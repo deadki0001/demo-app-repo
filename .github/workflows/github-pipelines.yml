@@ -60,21 +60,8 @@ jobs:
           path: tfplan
           retention-days: 1
 
-  manual-approval:
-    name: Manual Approval
-    needs: terraform-plan
-    runs-on: ubuntu-22.04
-    if: github.event_name == 'push' || github.event.inputs.action == 'apply'  
-    environment: 
-      name: production
-      url: https://github.com/${{ github.repository }}/actions/workflows/terraform.yml
-    steps:
-      - name: Approval Check
-        run: echo "Deployment approved"
-
   terraform-apply:
     name: Terraform Apply
-    needs: manual-approval
     runs-on: ubuntu-22.04
     # If triggered by push after manual approval.
     if: (github.event_name == 'push' && needs.manual-approval.result == 'success') || github.event.inputs.action == 'apply'
@@ -153,5 +140,8 @@ jobs:
             -backend-config="dynamodb_table=${{ secrets.TF_STATE_LOCK_TABLE }}"
 
       # Destroy all infrastructure created by Terraform
+      - name: Terraform Plan Destroy
+        run: terraform plan -destroy -out=tfdestroyplan
+
       - name: Destroy Infrastructure
-        run: terraform destroy -auto-approve
+        run: terraform apply -auto-approve tfdestroyplan
