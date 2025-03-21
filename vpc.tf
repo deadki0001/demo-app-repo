@@ -53,7 +53,7 @@ resource "aws_subnet" "demo_private_subnet_1" {
 
 resource "aws_subnet" "demo_private_subnet_2" {
   vpc_id            = aws_vpc.demo_application_vpc.id
-  availability_zone = "us-east-1a"
+  availability_zone = "us-east-1b"
   cidr_block        = "10.0.3.0/24"
 
   tags = {
