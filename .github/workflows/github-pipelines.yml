@@ -1,4 +1,4 @@
-name: Source & Build Stages
+name: Source & Build Phases
 
 on:
   push:
@@ -17,39 +17,8 @@ on:
           - destroy
 
 jobs:
-  build-and-push:
-    name: Build and Push to ECR
-    runs-on: ubuntu-latest
-    # Only run this job when needed (e.g., when applying or when Docker files change)
-    if: github.event.inputs.action == 'apply' || github.event_name == 'push'
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v2
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }}
-
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Build, Tag, and Push Image to ECR
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          ECR_REPOSITORY: demo-app-images
-          IMAGE_TAG: latest
-        run: |
-          cd docker
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-
   terraform-plan:
     name: Terraform Plan
-    needs: [build-and-push]  # This ensures Docker image is built first
     runs-on: ubuntu-22.04
     if: github.event_name == 'push' || github.event.inputs.action == 'plan' || github.event.inputs.action == 'apply'
     container:
@@ -101,15 +70,11 @@ jobs:
       - name: Approval Check
         run: echo "Deployment approved"
 
-  terraform-apply:
-    name: Terraform Apply
+  terraform-apply-initial:
+    name: Create Infrastructure
     needs: manual-approval
     runs-on: ubuntu-22.04
-    # If triggered by push after manual approval.
     if: (github.event_name == 'push' && needs.manual-approval.result == 'success') || github.event.inputs.action == 'apply'
-    environment: 
-      name: production
-      url: https://github.com/${{ github.repository }}/actions/workflows/terraform.yml
     container:
       image: hashicorp/terraform:1.5.7
     steps:
@@ -141,9 +106,79 @@ jobs:
         with:
           name: tfplan
 
-      # Finally, we apply the Terraform changes to create the resources in our AWS account.
-      - name: Apply Terraform Changes
-        run: terraform apply -auto-approve tfplan
+      # Apply infrastructure but don't include EC2 instances that depend on the image
+      - name: Apply Base Infrastructure
+        run: |
+          # Create only the ECR repository and other base infrastructure first
+          # You'll need to modify your Terraform to allow creating just the ECR repo
+          # One approach is to use -target flag or create a specific module for base infra
+          terraform apply -auto-approve -target=aws_ecr_repository.demo_app_repository tfplan
+
+  build-and-push:
+    name: Build and Push to ECR
+    needs: terraform-apply-initial
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # Fix the Dockerfile before building
+      - name: Fix Dockerfile MySQL Client Package
+        run: |
+          sed -i 's/mysql-client/default-mysql-client/g' docker/Dockerfile
+          cat docker/Dockerfile
+
+      - name: Build, Tag, and Push Image to ECR
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: demo-app-images
+          IMAGE_TAG: latest
+        run: |
+          cd docker
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+
+  terraform-apply-final:
+    name: Complete Infrastructure Deployment
+    needs: build-and-push
+    runs-on: ubuntu-22.04
+    container:
+      image: hashicorp/terraform:1.5.7
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Initialize Terraform
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="key=terraform.tfstate" \
+            -backend-config="region=${{ secrets.AWS_REGION }}" \
+            -backend-config="access_key=${{ secrets.AWS_ACCESS_KEY_ID }}" \
+            -backend-config="secret_key=${{ secrets.AWS_SECRET_ACCESS_KEY }}" \
+            -backend-config="dynamodb_table=${{ secrets.TF_STATE_LOCK_TABLE }}"
+
+      # Apply the rest of the infrastructure now that the image exists
+      - name: Apply Remaining Infrastructure
+        run: terraform apply -auto-approve
 
       - name: Output EC2 Public IP
         run: terraform output ec2_public_ip
