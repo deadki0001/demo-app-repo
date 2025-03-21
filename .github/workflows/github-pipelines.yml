@@ -76,10 +76,10 @@ jobs:
     name: Terraform Apply
     needs: manual-approval
     runs-on: ubuntu-22.04
-    if: github.event.inputs.action == 'apply'
+    # If triggered by push after manual approval.
+    if: (github.event_name == 'push' && needs.manual-approval.result == 'success') || github.event.inputs.action == 'apply'
     environment: 
       name: production
-      # URL that will show in the GitHub UI for this environment
       url: https://github.com/${{ github.repository }}/actions/workflows/terraform.yml
     container:
       image: hashicorp/terraform:1.5.7
