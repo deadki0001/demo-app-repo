@@ -25,7 +25,7 @@ resource "aws_instance" "demo_app_server" {
 
       # Get AWS account ID for ECR repository URL
       AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-      AWS_REGION=${aws_db_instance.mysql.region}
+      AWS_REGION="us-east-1"
 
       # Get RDS endpoint and credentials
       DB_HOST="${aws_db_instance.mysql.address}"
@@ -34,7 +34,7 @@ resource "aws_instance" "demo_app_server" {
       DB_PASSWORD=$(aws secretsmanager get-secret-value --secret-id ${aws_db_instance.mysql.master_user_secret[0].secret_arn} --query SecretString --output text | jq -r '.password')
 
       # Login to ECR and pull the latest image
-      aws ecr get-login-password --region ${aws_db_instance.mysql.region} | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.${aws_db_instance.mysql.region}.amazonaws.com
+      aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com
 
       # Run the container with environment variables for database connection
       docker run -d -p 80:80 \
@@ -42,12 +42,11 @@ resource "aws_instance" "demo_app_server" {
         -e DB_NAME=$DB_NAME \
         -e DB_USER=$DB_USER \
         -e DB_PASSWORD=$DB_PASSWORD \
-        $AWS_ACCOUNT_ID.dkr.ecr.${aws_db_instance.mysql.region}.amazonaws.com/demo-app-images:latest
+        $AWS_ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com/demo-app-images:latest
       EOF
 
   tags = {
     Name = "demo_app_server"
-          }
+  }
 }
-
 
