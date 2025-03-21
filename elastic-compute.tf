@@ -19,6 +19,7 @@ resource "aws_instance" "demo_app_server" {
   user_data = templatefile("${path.module}/user_data.sh", {
     DB_HOST = aws_db_instance.mysql.address
     DB_NAME = aws_db_instance.mysql.db_name
+    DB_USER = "admin"
   })
 
 
