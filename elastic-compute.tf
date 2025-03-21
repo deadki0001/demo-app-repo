@@ -17,18 +17,17 @@ resource "aws_instance" "demo_app_server" {
 
   // The above is a simple user data script, we use this to automate the process of installing Nginx and enable Nginx's services.
   user_data = <<-EOF
-              #!/bin/bash
-              apt update -y
-              apt install nginx -y
-              echo "<h1>Welcome to my demo application</h1>" > /var/www/html/index.nginx-debian.html
-              systemctl enable nginx
-              systemctl start nginx
-              EOF
-
-
+                #!/bin/bash
+                apt-get update -y
+                apt-get install -y nginx
+                echo "<h1>Welcome to my demo application</h1>" > /var/www/html/index.nginx-debian.html
+                systemctl enable nginx
+                systemctl start nginx
+                EOF
 
   tags = {
     Name = "demo_app_server"
-  }
-
+          }
 }
+
+
