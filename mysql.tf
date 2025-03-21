@@ -21,6 +21,7 @@ resource "aws_db_instance" "mysql" {
   username                        = "admin"
   manage_master_user_password     = true
   deletion_protection             = true
+  final_snapshot_identifier       = true
   monitoring_interval             = 60
   monitoring_role_arn             = aws_iam_role.rds_enhanced_monitoring.arn
   copy_tags_to_snapshot           = true
