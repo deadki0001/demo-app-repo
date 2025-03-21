@@ -18,6 +18,7 @@ resource "aws_db_instance" "mysql" {
   vpc_security_group_ids          = [aws_security_group.database_security_group.id]
   apply_immediately               = true
   db_name                         = "demodb"
+  username                        = "admin"
   manage_master_user_password     = true
   deletion_protection             = true
   monitoring_interval             = 60
