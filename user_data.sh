@@ -28,9 +28,13 @@ AWS_REGION="us-east-1"
 SECRET_ARN=$(aws rds describe-db-instances --db-instance-identifier demo-database --query 'DBInstances[0].MasterUserSecret.SecretArn' --output text)
 
 for i in {1..5}; do
-  DB_PASSWORD=$(aws secretsmanager get-secret-value --secret-id "$SECRET_ARN" --query SecretString --output text 2>/dev/null | jq -r '. | fromjson | .password') && break
+  DB_PASSWORD=$(aws secretsmanager get-secret-value --secret-id "$SECRET_ARN" --query SecretString --output text 2>/dev/null | jq -r '.password')
+  if [ -n "$DB_PASSWORD" ]; then
+    break
+  fi
   sleep 10
 done
+
 
 # Login to ECR
 aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com
