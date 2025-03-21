@@ -4,32 +4,42 @@ on:
   push:
     branches: 
       - main
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action to perform'
+        required: true
+        default: 'plan'
+        type: choice
+        options:
+          - plan
+          - apply
+          - destroy
 
-# This part of the pipeline we use a Ubuntu / Linux based Runner to host a container, the terraform light image, 
-# Which is a condensed version of Linux with Terraform pre-packaged into it.             
+# This workflow uses a Ubuntu/Linux based Runner to host a container, the terraform light image, 
+# which is a condensed version of Linux with Terraform pre-packaged into it.
 jobs:
   terraform-plan:
     name: Terraform Plan
-    runs-on: ubuntu-22.04     
+    runs-on: ubuntu-22.04
+    if: github.event_name == 'push' || github.event.inputs.action == 'plan' || github.event.inputs.action == 'apply'
     container:
-      image: hashicorp/terraform:1.5.7          # It's always best to use a stable version of terraform as latest versions could cause issues within your pipeline in future. 
+      image: hashicorp/terraform:1.5.7          # It's always best to use a stable version of terraform as latest versions could cause issues within your pipeline in future.
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4         # Checkout the code from the repository.
+        uses: actions/checkout@v4         
 
       # We need to programmatically authenticate to AWS to ensure Terraform knows where to deploy the resources we have prepared.
-      # Secondly, we need to ensure that the programmatic user is always assigned permissions using the principle of least privilege. 
+      # Secondly, we need to ensure that the programmatic user is always assigned permissions using the principle of least privilege.
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v2
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_REGION }}
-          run: |
-            echo "AWS credentials configured" 
 
       # Here we initialize terraform and use the s3 bucket to manage our state and also call upon our DynamoDB table to perform session management in terms of state locking.
-      # We then ask Terraform to perform a plan, which should provide us with a summary of the resources it's about to create.            
+      # We then ask Terraform to perform a plan, which should provide us with a summary of the resources it's about to create.
       - name: Initialize Terraform
         run: |
           terraform init \
@@ -38,52 +48,115 @@ jobs:
             -backend-config="region=${{ secrets.AWS_REGION }}" \
             -backend-config="access_key=${{ secrets.AWS_ACCESS_KEY_ID }}" \
             -backend-config="secret_key=${{ secrets.AWS_SECRET_ACCESS_KEY }}" \
-            -backend-config="dynamodb_table=${{ secrets.TF_STATE_LOCK_TABLE }}" 
+            -backend-config="dynamodb_table=${{ secrets.TF_STATE_LOCK_TABLE }}"
 
       - name: Terraform Plan
-        run: terraform plan -out=tfplan 
+        run: terraform plan -out=tfplan
+
+      - name: Upload Terraform Plan
+        uses: actions/upload-artifact@v3
+        with:
+          name: tfplan
+          path: tfplan
+          retention-days: 1
 
   manual-approval:
     name: Manual Approval
     needs: terraform-plan
     runs-on: ubuntu-22.04
+    if: github.event.inputs.action == 'apply'
+    environment: 
+      name: production
+      url: https://github.com/${{ github.repository }}/actions/workflows/terraform.yml
     steps:
       - name: Wait for Manual Approval
         uses: hmarr/auto-approve-action@v3
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   terraform-apply:
     name: Terraform Apply
     needs: manual-approval
     runs-on: ubuntu-22.04
+    if: github.event.inputs.action == 'apply'
+    environment: 
+      name: production
+      # URL that will show in the GitHub UI for this environment
+      url: https://github.com/${{ github.repository }}/actions/workflows/terraform.yml
     container:
-      image: hashicorp/terraform:1.5.7  
+      image: hashicorp/terraform:1.5.7
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4  
+        uses: actions/checkout@v4
 
       # We need to programmatically authenticate to AWS to ensure Terraform knows where to deploy the resources we have prepared.
-      # Secondly, we need to ensure that the programmatic user is always assigned permissions using the principle of least privilege. 
+      # Secondly, we need to ensure that the programmatic user is always assigned permissions using the principle of least privilege.
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v2
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_REGION }}
-          run: |
-            echo "AWS credentials configured" 
-            
+
       # Here we initialize terraform and use the s3 bucket to manage our state and also call upon our DynamoDB table to perform session management in terms of state locking.
       - name: Initialize Terraform
         run: |
           terraform init \
             -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="key=terraform.tfstate" \
             -backend-config="region=${{ secrets.AWS_REGION }}" \
-            -backend-config="dynamodb_table=${{ secrets.TF_STATE_LOCK_TABLE }}"  # Initialize with the same backend config to manage state and locking.
+            -backend-config="access_key=${{ secrets.AWS_ACCESS_KEY_ID }}" \
+            -backend-config="secret_key=${{ secrets.AWS_SECRET_ACCESS_KEY }}" \
+            -backend-config="dynamodb_table=${{ secrets.TF_STATE_LOCK_TABLE }}"
+
+      - name: Download Terraform Plan
+        uses: actions/download-artifact@v3
+        with:
+          name: tfplan
 
       # Finally, we apply the Terraform changes to create the resources in our AWS account.
       - name: Apply Terraform Changes
-        run: terraform apply -auto-approve tfplan  
+        run: terraform apply -auto-approve tfplan
+
+      - name: Output EC2 Public IP
+        run: terraform output ec2_public_ip
+
+  terraform-destroy:
+    name: Terraform Destroy
+    runs-on: ubuntu-22.04
+    if: github.event.inputs.action == 'destroy'
+    environment: 
+      name: production
+      # URL that will show in the GitHub UI for this environment
+      url: https://github.com/${{ github.repository }}/actions/workflows/terraform.yml
+    container:
+      image: hashicorp/terraform:1.5.7
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # We need to programmatically authenticate to AWS to ensure Terraform knows where to deploy the resources we have prepared.
+      # Secondly, we need to ensure that the programmatic user is always assigned permissions using the principle of least privilege.
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      # Here we initialize terraform and use the s3 bucket to manage our state and also call upon our DynamoDB table to perform session management in terms of state locking.
+      - name: Initialize Terraform
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="key=terraform.tfstate" \
+            -backend-config="region=${{ secrets.AWS_REGION }}" \
+            -backend-config="access_key=${{ secrets.AWS_ACCESS_KEY_ID }}" \
+            -backend-config="secret_key=${{ secrets.AWS_SECRET_ACCESS_KEY }}" \
+            -backend-config="dynamodb_table=${{ secrets.TF_STATE_LOCK_TABLE }}"
+
+      # Destroy all infrastructure created by Terraform
+      - name: Destroy Infrastructure
+        run: terraform destroy -auto-approve
