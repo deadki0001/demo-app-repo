@@ -8,6 +8,8 @@ AWS White Papers / Documentation
 
 4.) https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/Welcome.html (What is Amazon RDS?)
 
+5.) https://docs.aws.amazon.com/ecr/ (What is Amazon Elastic Container Registery?)
+
 Terraform Resources Documentation
 =================================
 https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources

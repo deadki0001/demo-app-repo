@@ -6,7 +6,7 @@
 
 // Now that we have created a security group to protect our EC2 from Bad Actors
 // We can create the EC2 Resource. 
-// Utilizing a role, to securely give the instance access to login into ECR. 
+// Utilizing a role to securely give the instance access to login into ECR & Manage Secrets with AWS Secrets Manager.
 
 resource "aws_iam_role" "demo_app_role" {
   name = "demo-app-role"
