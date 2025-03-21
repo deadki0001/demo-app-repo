@@ -25,7 +25,7 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_REGION: ${{ secrets.AWS_REGION }}
         run: |
-          echo "AWS credentials configured"  # Programmatically authenticate with AWS using GitHub secrets.
+          echo "AWS credentials configured" 
 
       # Here we initialize terraform and use the s3 bucket to manage our state and also call upon our DynamoDB table to perform session management in terms of state locking.
       # We then ask Terraform to perform a plan, which should provide us with a summary of the resources it's about to create.            
@@ -34,10 +34,10 @@ jobs:
           terraform init \
             -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
             -backend-config="region=${{ secrets.AWS_REGION }}" \
-            -backend-config="dynamodb_table=${{ secrets.TF_STATE_LOCK_TABLE }}"  # Initialize Terraform with backend configurations.
+            -backend-config="dynamodb_table=${{ secrets.TF_STATE_LOCK_TABLE }}"  
 
       - name: Terraform Plan
-        run: terraform plan -out=tfplan  # Generate a Terraform execution plan.
+        run: terraform plan -out=tfplan 
 
   manual-approval:
     name: Manual Approval
@@ -49,17 +49,17 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # Manual approval required before proceeding to apply.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  
 
   terraform-apply:
     name: Terraform Apply
     needs: manual-approval
     runs-on: ubuntu-22.04
     container:
-      image: hashicorp/terraform:1.5.7  # Stable Terraform version.
+      image: hashicorp/terraform:1.5.7  
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4  # Checkout the code again to ensure the latest repository content is used.
+        uses: actions/checkout@v4  
 
       # We need to programmatically authenticate to AWS to ensure Terraform knows where to deploy the resources we have prepared.
       # Secondly, we need to ensure that the programmatic user is always assigned permissions using the principle of least privilege. 
@@ -81,4 +81,4 @@ jobs:
 
       # Finally, we apply the Terraform changes to create the resources in our AWS account.
       - name: Apply Terraform Changes
-        run: terraform apply -auto-approve tfplan  # Apply the Terraform plan to create resources in AWS.
+        run: terraform apply -auto-approve tfplan  
