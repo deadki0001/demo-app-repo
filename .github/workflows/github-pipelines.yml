@@ -136,7 +136,7 @@ jobs:
       # Fix the Dockerfile before building
       - name: Fix Dockerfile MySQL Client Package
         run: |
-          sed -i 's/mysql-client/default-mysql-client/g' docker/Dockerfile
+          sed -i 's/default-default-mysql-client/default-mysql-client/g' docker/Dockerfile
           cat docker/Dockerfile
 
       - name: Build, Tag, and Push Image to ECR
