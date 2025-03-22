@@ -63,7 +63,7 @@ resource "aws_subnet" "demo_private_subnet_2" {
 
 // Private subnets are used to communicate locally within a given network, they have various use cases.
 // A subnet characteristics is simply defined on where it has direct access to the internet using an Internet Gateway.
-// More on Internet Gateways below.
+// More on Internet Gateways below
 
 resource "aws_eip" "nat_gw_eip" {
   domain = "vpc"
