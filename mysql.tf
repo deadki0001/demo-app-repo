@@ -12,7 +12,7 @@ resource "aws_db_instance" "mysql" {
   instance_class                  = "db.t3.micro"
   allocated_storage               = 20
   max_allocated_storage           = 30
-  multi_az                        = false
+  multi_az                        = true
   storage_encrypted               = true
   db_subnet_group_name            = aws_db_subnet_group.db_subnet_group.name
   vpc_security_group_ids          = [aws_security_group.database_security_group.id]
@@ -21,7 +21,7 @@ resource "aws_db_instance" "mysql" {
   username                        = "admin"
   manage_master_user_password     = true
   deletion_protection             = true
-  final_snapshot_identifier       = true
+  final_snapshot_identifier       = "final-spashot-prior-to-deletion"
   monitoring_interval             = 60
   monitoring_role_arn             = aws_iam_role.rds_enhanced_monitoring.arn
   copy_tags_to_snapshot           = true

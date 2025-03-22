@@ -55,7 +55,7 @@ resource "aws_iam_instance_profile" "demo_app_instance_profile" {
 }
 
 resource "aws_instance" "demo_app_server" {
-  ami                         = "ami-04b4f1a9cf54c11d0"                            // an AMI, otherwise known as an Amazon Machine Image, This is pre-built software, such as Ubuntu, Windows and EC2. 
+  ami                         = "ami-04b4f1a9cf54c11d0"                            // An AMI, otherwise known as an Amazon Machine Image, This is pre-built software, such as Ubuntu, Windows and EC2. 
   instance_type               = "t2.micro"                                         // Instance Types typically refer too the Machine Specifications, better put Compute Resources, there are a number of Instance Types, which vary depending on your Use case or Workload needs. 
   subnet_id                   = aws_subnet.demo_public_subnet_1.id                 // Here we are referencing Instance placement, this is important, should you be launching a webserver that needs to be public facing as in this example.
   vpc_security_group_ids      = [aws_security_group.application_security_group.id] // Here we are associating the above security group to the actual EC2 Instance to protect the server from bad actors.
