@@ -28,7 +28,7 @@ jobs:
         uses: actions/checkout@v4         
 
       # We need to programmatically authenticate to AWS to ensure Terraform knows where to deploy the resources we have prepared.
-      # Secondly, we need to ensure that the programmatic user is always assigned permissions using the principle of least privilege.
+      # Secondly, we need to ensure that the programmatic user is always assigned permissions using the principle of least privilege
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v2
         with:
