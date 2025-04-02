@@ -4,7 +4,7 @@
 
 
 resource "aws_vpc" "demo_application_vpc" {
-  cidr_block = "10.0.0.0/16" // = 65, 536 usable addresses within this given network.
+  cidr_block = "10.0.0.0/16" // = 65, 536 usable addresses within this given network
 
   tags = {
     Name       = "demo-application-vpc"
