@@ -169,11 +169,6 @@ jobs:
       - name: Apply Infrastructure
         run: terraform apply -auto-approve tfplan.binary
 
-      - name: Save Terraform Outputs
-        id: tf-outputs
-        run: |
-          echo "ec2_public_ip=$(terraform output -raw ec2_public_ip 2>/dev/null || echo 'not-created')" >> $GITHUB_OUTPUT
-
       - name: Create Deployment Record
         run: |
           echo "🚀 Deployment completed at $(date -u +"%Y-%m-%d %H:%M:%S UTC")" 
@@ -286,5 +281,4 @@ jobs:
       - name: Log Destruction Event
         run: |
           echo "💥 Infrastructure destroyed at $(date -u +"%Y-%m-%d %H:%M:%S UTC")" 
-
           echo "👤 Destroyed by: ${{ github.actor }}"

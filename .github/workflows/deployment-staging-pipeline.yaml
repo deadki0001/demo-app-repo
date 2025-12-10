@@ -149,11 +149,6 @@ jobs:
       - name: Apply Infrastructure
         run: terraform apply -auto-approve tfplan.binary
 
-      - name: Save Terraform Outputs
-        id: tf-outputs
-        run: |
-          echo "eks_cluster_name=$(terraform output -raw cluster_name 2>/dev/null || echo 'not-created')" >> $GITHUB_OUTPUT
-
   build-and-scan-image:
     name: Build & Scan Container Image
     needs: terraform-apply
