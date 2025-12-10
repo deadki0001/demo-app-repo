@@ -1,0 +1,206 @@
+name: Deploy to Staging (UAT)
+
+on:
+  push:
+    branches: 
+      - staging
+  pull_request:
+    branches:
+      - staging
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+  security-events: write
+
+jobs:
+  security-scan-iac:
+    name: Checkov Security Scan
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4.1.1
+
+      - name: Run Checkov IaC Security Scan
+        uses: bridgecrewio/checkov-action@v12.2867.0
+        with:
+          directory: .
+          framework: terraform
+          output_format: cli,sarif
+          output_file_path: console,checkov-results.sarif
+          soft_fail: false
+          download_external_modules: true
+
+      - name: Upload Checkov Results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v2
+        if: always()
+        with:
+          sarif_file: checkov-results.sarif
+
+  terraform-plan:
+    name: Terraform Plan
+    runs-on: ubuntu-22.04
+    needs: security-scan-iac
+    container:
+      image: hashicorp/terraform:1.5.7
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # Staging uses its own AWS account and IAM role
+      - name: Configure AWS Credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN_STAGING }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: GitHubActions-Staging-TerraformPlan
+
+      - name: Initialize Terraform
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET_STAGING }}" \
+            -backend-config="key=staging/terraform.tfstate" \
+            -backend-config="region=${{ vars.AWS_REGION }}" \
+            -backend-config="dynamodb_table=${{ vars.TF_STATE_LOCK_TABLE }}"
+
+      - name: Terraform Validate
+        run: terraform validate
+
+      - name: Terraform Format Check
+        run: terraform fmt -check -recursive
+
+      - name: Terraform Plan
+        run: terraform plan -out=tfplan.binary
+
+      - name: Convert Plan to JSON for Security Analysis
+        run: terraform show -json tfplan.binary > tfplan.json
+
+      - name: Run Checkov on Terraform Plan
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          file: tfplan.json
+          framework: terraform_plan
+          output_format: cli,sarif
+          output_file_path: console,checkov-plan-results.sarif
+          soft_fail: false
+
+      - name: Upload Checkov Plan Results
+        uses: github/codeql-action/upload-sarif@v2
+        if: always()
+        with:
+          sarif_file: checkov-plan-results.sarif
+
+      - name: Upload Terraform Plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-staging
+          path: tfplan.binary
+          retention-days: 5
+
+  # Staging requires manual approval before deploying
+  manual-approval:
+    name: Staging Deployment Approval
+    needs: terraform-plan
+    runs-on: ubuntu-22.04
+    if: github.event_name == 'push'
+    environment: 
+      name: staging
+      url: https://github.com/${{ github.repository }}/actions
+    steps:
+      - name: Approval Gate
+        run: |
+          echo "✅ Deployment to staging approved by ${{ github.actor }}"
+          echo "📅 Timestamp: $(date -u +"%Y-%m-%d %H:%M:%S UTC")"
+          echo "📝 Commit SHA: ${{ github.sha }}"
+
+  terraform-apply:
+    name: Apply Infrastructure
+    needs: manual-approval
+    runs-on: ubuntu-22.04
+    container:
+      image: hashicorp/terraform:1.5.7
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN_STAGING }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: GitHubActions-Staging-TerraformApply
+
+      - name: Initialize Terraform
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET_STAGING }}" \
+            -backend-config="key=staging/terraform.tfstate" \
+            -backend-config="region=${{ vars.AWS_REGION }}" \
+            -backend-config="dynamodb_table=${{ vars.TF_STATE_LOCK_TABLE }}"
+
+      - name: Download Terraform Plan
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan-staging
+
+      - name: Apply Infrastructure
+        run: terraform apply -auto-approve tfplan.binary
+
+      - name: Save Terraform Outputs
+        id: tf-outputs
+        run: |
+          echo "eks_cluster_name=$(terraform output -raw cluster_name 2>/dev/null || echo 'not-created')" >> $GITHUB_OUTPUT
+
+  build-and-scan-image:
+    name: Build & Scan Container Image
+    needs: terraform-apply
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN_STAGING }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: GitHubActions-Staging-ImageBuild
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build Container Image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: demo-app-images
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -f docker/Dockerfile docker/
+          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:staging-latest
+
+      # Staging has stricter security scanning - we fail on HIGH and CRITICAL vulnerabilities
+      - name: Run Trivy Security Scan (Strict)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ steps.login-ecr.outputs.registry }}/demo-app-images:${{ github.sha }}
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '1'  # Fail if vulnerabilities found
+
+      - name: Upload Trivy Results
+        uses: github/codeql-action/upload-sarif@v2
+        if: always()
+        with:
+          sarif_file: trivy-results.sarif
+
+      - name: Push Image to ECR
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: demo-app-images
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:staging-latest

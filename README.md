@@ -24,3 +24,11 @@ Please note the pre-quisite to this Demo, will require you to have the following
 --> A AWS Account, with Free Tier Services
 --> A S3 Bucket for the Terraform State
 --> A DynamoDB Table to manage Terraform State Locking
+
+aws dynamodb create-table \
+  --table-name terraform-state-lock \
+  --attribute-definitions AttributeName=LockID,AttributeType=S \
+  --key-schema AttributeName=LockID,KeyType=HASH \
+  --billing-mode PAY_PER_REQUEST \
+  --region us-east-2 \
+  --profile nonprod

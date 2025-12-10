@@ -1,0 +1,331 @@
+name: Deploy to Production
+
+on:
+  push:
+    branches: 
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action to perform'
+        required: true
+        default: 'plan'
+        type: choice
+        options:
+          - plan
+          - apply
+          - destroy
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+  security-events: write
+
+jobs:
+  security-scan-iac:
+    name: Checkov Security Scan
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Run Checkov IaC Security Scan
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: .
+          framework: terraform
+          output_format: cli,sarif
+          output_file_path: console,checkov-results.sarif
+          soft_fail: false
+          download_external_modules: true
+
+      - name: Upload Checkov Results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v2
+        if: always()
+        with:
+          sarif_file: checkov-results.sarif
+
+  terraform-plan:
+    name: Terraform Plan
+    runs-on: ubuntu-22.04
+    needs: security-scan-iac
+    if: github.event_name == 'pull_request' || github.event_name == 'push' || github.event.inputs.action == 'plan' || github.event.inputs.action == 'apply'
+    container:
+      image: hashicorp/terraform:1.5.7
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # OIDC Authentication - NO STORED CREDENTIALS!
+      - name: Configure AWS Credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN_PROD }}
+          aws-region: us-east-1
+          role-session-name: GHA-Prod-Plan-${{ github.sha }}
+          role-duration-seconds: 3600
+
+      - name: Initialize Terraform
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET_PROD }}" \
+            -backend-config="key=prod/terraform.tfstate" \
+            -backend-config="region=us-east-2" \
+            -backend-config="dynamodb_table=${{ vars.TF_STATE_LOCK_TABLE }}"
+
+      - name: Terraform Validate
+        run: terraform validate
+
+      - name: Terraform Format Check
+        run: terraform fmt -check -recursive
+
+      - name: Terraform Plan
+        run: terraform plan -out=tfplan.binary
+
+      - name: Convert Plan to JSON for Security Analysis
+        run: terraform show -json tfplan.binary > tfplan.json
+
+      - name: Run Checkov on Terraform Plan
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          file: tfplan.json
+          framework: terraform_plan
+          output_format: cli,sarif,json
+          output_file_path: console,checkov-plan-results.sarif,checkov-results.json
+          soft_fail: false
+          compact: true
+
+      - name: Upload Checkov Plan Results
+        uses: github/codeql-action/upload-sarif@v2
+        if: always()
+        with:
+          sarif_file: checkov-plan-results.sarif
+
+      - name: Upload Terraform Plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-prod
+          path: tfplan.binary
+          retention-days: 30
+
+      - name: Upload Checkov JSON Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: checkov-results
+          path: checkov-results.json
+          retention-days: 90
+
+  manual-approval:
+    name: Production Deployment Approval
+    needs: terraform-plan
+    runs-on: ubuntu-22.04
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event.inputs.action == 'apply'
+    environment: 
+      name: production
+      url: https://github.com/${{ github.repository }}/actions
+    steps:
+      - name: Approval Gate
+        run: |
+          echo "✅ Production deployment approved by ${{ github.actor }}"
+          echo "📅 Timestamp: $(date -u +"%Y-%m-%d %H:%M:%S UTC")"
+          echo "📝 Commit SHA: ${{ github.sha }}"
+          echo "🔒 This deployment was reviewed and approved"
+
+  terraform-apply:
+    name: Apply Infrastructure
+    needs: manual-approval
+    runs-on: ubuntu-22.04
+    container:
+      image: hashicorp/terraform:1.5.7
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN_PROD }}
+          aws-region: us-east-1
+          role-session-name: GHA-Prod-Apply-${{ github.sha }}
+          role-duration-seconds: 3600
+
+      - name: Initialize Terraform
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET_PROD }}" \
+            -backend-config="key=prod/terraform.tfstate" \
+            -backend-config="region=us-east-2" \
+            -backend-config="dynamodb_table=${{ vars.TF_STATE_LOCK_TABLE }}"
+
+      - name: Download Terraform Plan
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan-prod
+
+      - name: Apply Infrastructure
+        run: terraform apply -auto-approve tfplan.binary
+
+      - name: Save Terraform Outputs
+        id: tf-outputs
+        run: |
+          echo "eks_cluster_name=$(terraform output -raw eks_cluster_name 2>/dev/null || echo 'not-created')" >> $GITHUB_OUTPUT
+          echo "eks_cluster_endpoint=$(terraform output -raw eks_cluster_endpoint 2>/dev/null || echo 'not-created')" >> $GITHUB_OUTPUT
+
+      - name: Create Deployment Record
+        run: |
+          echo "🚀 Deployment completed at $(date -u +"%Y-%m-%d %H:%M:%S UTC")" 
+          echo "👤 Deployed by: ${{ github.actor }}"
+          echo "📝 Commit SHA: ${{ github.sha }}"
+          echo "☸️  EKS Cluster: ${{ steps.tf-outputs.outputs.eks_cluster_name }}"
+
+  build-and-scan-image:
+    name: Build & Scan Container Image
+    needs: terraform-apply
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN_PROD }}
+          aws-region: us-east-1
+          role-session-name: GHA-Prod-Build-${{ github.sha }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build Container Image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: demo-app-images
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -f docker/Dockerfile docker/
+          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:prod-latest
+          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:v1.0.${{ github.run_number }}
+
+      # Production: Zero tolerance for CRITICAL vulnerabilities
+      - name: Run Trivy Security Scan (Strict)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ steps.login-ecr.outputs.registry }}/demo-app-images:${{ github.sha }}
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH,MEDIUM'
+          exit-code: '1'
+
+      - name: Upload Trivy Results
+        uses: github/codeql-action/upload-sarif@v2
+        if: always()
+        with:
+          sarif_file: trivy-results.sarif
+
+      - name: Generate SBOM
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ steps.login-ecr.outputs.registry }}/demo-app-images:${{ github.sha }}
+          format: 'cyclonedx'
+          output: 'sbom.json'
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-prod
+          path: sbom.json
+          retention-days: 365
+
+      - name: Push Image to ECR
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: demo-app-images
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:prod-latest
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:v1.0.${{ github.run_number }}
+
+  deploy-to-eks:
+    name: Deploy to EKS
+    needs: build-and-scan-image
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN_PROD }}
+          aws-region: us-east-1
+          role-session-name: GHA-Prod-Deploy-${{ github.sha }}
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --region us-east-1 --name demo-eks-cluster
+
+      - name: Deploy to Kubernetes
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          # Create namespace if not exists
+          kubectl create namespace demo-app --dry-run=client -o yaml | kubectl apply -f -
+          
+          # Apply Kubernetes manifests
+          kubectl apply -f k8s/ -n demo-app
+          
+          # Update image
+          kubectl set image deployment/demo-app demo-app=${{ env.ECR_REGISTRY }}/demo-app-images:${{ env.IMAGE_TAG }} -n demo-app
+          
+          # Wait for rollout
+          kubectl rollout status deployment/demo-app -n demo-app --timeout=5m
+
+      - name: Get Service URL
+        run: |
+          kubectl get svc -n demo-app
+
+  terraform-destroy:
+    name: Destroy Production Infrastructure
+    runs-on: ubuntu-22.04
+    if: github.event.inputs.action == 'destroy'
+    environment: 
+      name: production-destroy
+      url: https://github.com/${{ github.repository }}/actions
+    container:
+      image: hashicorp/terraform:1.5.7
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN_PROD }}
+          aws-region: us-east-1
+          role-session-name: GHA-Prod-Destroy-${{ github.sha }}
+
+      - name: Initialize Terraform
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET_PROD }}" \
+            -backend-config="key=prod/terraform.tfstate" \
+            -backend-config="region=us-east-2" \
+            -backend-config="dynamodb_table=${{ vars.TF_STATE_LOCK_TABLE }}"
+
+      - name: Terraform Plan Destroy
+        run: terraform plan -destroy -out=tfdestroyplan
+
+      - name: Destroy Infrastructure
+        run: terraform apply -auto-approve tfdestroyplan
+
+      - name: Log Destruction Event
+        run: |
+          echo "💥 Infrastructure destroyed at $(date -u +"%Y-%m-%d %H:%M:%S UTC")" 
+          echo "👤 Destroyed by: ${{ github.actor }}"
