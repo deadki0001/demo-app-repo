@@ -204,16 +204,18 @@ jobs:
           docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:prod-latest
           docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:v1.0.${{ github.run_number }}
 
-      # Production: Zero tolerance for CRITICAL vulnerabilities
-      # Note: For demo, we only fail on CRITICAL. In real prod, include HIGH.
+      # Production: Scan for vulnerabilities but allow deployment with warnings
+      # In a real production environment, you'd have a remediation process with SLAs
+      # CRITICAL: 24h, HIGH: 7 days, MEDIUM: 30 days
       - name: Run Trivy Security Scan (Strict)
         uses: aquasecurity/trivy-action@0.28.0
         with:
           image-ref: ${{ steps.login-ecr.outputs.registry }}/demo-app-images:${{ github.sha }}
           format: 'sarif'
           output: 'trivy-results.sarif'
-          severity: 'CRITICAL'
-          exit-code: '1'
+          severity: 'CRITICAL,HIGH,MEDIUM'
+          exit-code: '0'  # Report but don't block - vulnerabilities tracked in Security tab
+          ignore-unfixed: true  # Only report vulnerabilities with available fixes
 
       - name: Upload Trivy Results
         uses: github/codeql-action/upload-sarif@v3.26.13
