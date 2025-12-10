@@ -1,4 +1,4 @@
-# Production Backend Configuration
+# Prod Backend Configuration
 terraform {
   backend "s3" {
     bucket         = "deadki-terraform-production-state-bucket"
