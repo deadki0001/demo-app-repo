@@ -49,7 +49,7 @@ jobs:
       image: hashicorp/terraform:1.5.7
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.1.1
 
       # OIDC authentication - no stored credentials!
       # GitHub generates a temporary token that AWS trusts
@@ -58,7 +58,8 @@ jobs:
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN_NONPROD }}
           aws-region: ${{ vars.AWS_REGION }}
-          role-session-name: GitHubActions-NonProd-TerraformPlan
+          role-session-name: GHA-NonProd-Plan-${{ github.sha }}
+          role-duration-seconds: 3600
 
       - name: Initialize Terraform
         run: |
@@ -113,14 +114,15 @@ jobs:
       image: hashicorp/terraform:1.5.7
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.1.1
 
       - name: Configure AWS Credentials via OIDC
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v4.0.2
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN_NONPROD }}
           aws-region: ${{ vars.AWS_REGION }}
-          role-session-name: GitHubActions-NonProd-TerraformApply
+          role-session-name: GHA-NonProd-Apply-${{ github.sha }}
+          role-duration-seconds: 3600
 
       - name: Initialize Terraform
         run: |
@@ -149,14 +151,15 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.1.1
 
       - name: Configure AWS Credentials via OIDC
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v4.0.2
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN_NONPROD }}
           aws-region: ${{ vars.AWS_REGION }}
-          role-session-name: GitHubActions-NonProd-ImageBuild
+          role-session-name: GHA-NonProd-Build-${{ github.sha }}
+          role-duration-seconds: 3600
 
       - name: Login to Amazon ECR
         id: login-ecr

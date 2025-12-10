@@ -21,7 +21,7 @@
 #         fsGroup: 1000
 #       containers:
 #       - name: demo-app
-#         image: ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com/demo-app-images:latest
+#         image: ACCOUNT_ID.dkr.ecr.us-east-2.amazonaws.com/demo-app-images:latest
 #         imagePullPolicy: Always
 #         ports:
 #         - containerPort: 80

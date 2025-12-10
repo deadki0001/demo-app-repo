@@ -153,5 +153,5 @@
 # }
 
 # output "configure_kubectl" {
-#   value = "aws eks update-kubeconfig --region us-east-1 --name ${aws_eks_cluster.demo.name}"
+#   value = "aws eks update-kubeconfig --region us-east-2 --name ${aws_eks_cluster.demo.name}"
 # }

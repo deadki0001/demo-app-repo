@@ -33,7 +33,7 @@ jobs:
           download_external_modules: true
 
       - name: Upload Checkov Results to GitHub Security
-        uses: github/codeql-action/upload-sarif@v2
+        uses: github/codeql-action/upload-sarif@v3.26.13
         if: always()
         with:
           sarif_file: checkov-results.sarif
@@ -46,15 +46,16 @@ jobs:
       image: hashicorp/terraform:1.5.7
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.1.1
 
       # Staging uses its own AWS account and IAM role
       - name: Configure AWS Credentials via OIDC
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v4.0.2
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN_STAGING }}
           aws-region: ${{ vars.AWS_REGION }}
-          role-session-name: GitHubActions-Staging-TerraformPlan
+          role-session-name: GHA-Staging-Plan-${{ github.sha }}
+          role-duration-seconds: 3600
 
       - name: Initialize Terraform
         run: |
@@ -77,7 +78,7 @@ jobs:
         run: terraform show -json tfplan.binary > tfplan.json
 
       - name: Run Checkov on Terraform Plan
-        uses: bridgecrewio/checkov-action@v12
+        uses: bridgecrewio/checkov-action@v12.2867.0
         with:
           file: tfplan.json
           framework: terraform_plan
@@ -86,13 +87,13 @@ jobs:
           soft_fail: false
 
       - name: Upload Checkov Plan Results
-        uses: github/codeql-action/upload-sarif@v2
+        uses: github/codeql-action/upload-sarif@v3.26.13
         if: always()
         with:
           sarif_file: checkov-plan-results.sarif
 
       - name: Upload Terraform Plan
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v4.4.3
         with:
           name: tfplan-staging
           path: tfplan.binary
@@ -122,14 +123,15 @@ jobs:
       image: hashicorp/terraform:1.5.7
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.1.1
 
       - name: Configure AWS Credentials via OIDC
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v4.0.2
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN_STAGING }}
           aws-region: ${{ vars.AWS_REGION }}
-          role-session-name: GitHubActions-Staging-TerraformApply
+          role-session-name: GHA-Staging-Apply-${{ github.sha }}
+          role-duration-seconds: 3600
 
       - name: Initialize Terraform
         run: |
@@ -140,7 +142,7 @@ jobs:
             -backend-config="dynamodb_table=${{ vars.TF_STATE_LOCK_TABLE }}"
 
       - name: Download Terraform Plan
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v4.1.8
         with:
           name: tfplan-staging
 
@@ -158,18 +160,19 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.1.1
 
       - name: Configure AWS Credentials via OIDC
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v4.0.2
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN_STAGING }}
           aws-region: ${{ vars.AWS_REGION }}
-          role-session-name: GitHubActions-Staging-ImageBuild
+          role-session-name: GHA-Staging-Build-${{ github.sha }}
+          role-duration-seconds: 3600
 
       - name: Login to Amazon ECR
         id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
+        uses: aws-actions/amazon-ecr-login@v2.0.1
 
       - name: Build Container Image
         env:
@@ -182,7 +185,7 @@ jobs:
 
       # Staging has stricter security scanning - we fail on HIGH and CRITICAL vulnerabilities
       - name: Run Trivy Security Scan (Strict)
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@0.28.0
         with:
           image-ref: ${{ steps.login-ecr.outputs.registry }}/demo-app-images:${{ github.sha }}
           format: 'sarif'
@@ -191,7 +194,7 @@ jobs:
           exit-code: '1'  # Fail if vulnerabilities found
 
       - name: Upload Trivy Results
-        uses: github/codeql-action/upload-sarif@v2
+        uses: github/codeql-action/upload-sarif@v3.26.13
         if: always()
         with:
           sarif_file: trivy-results.sarif

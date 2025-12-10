@@ -11,6 +11,7 @@ terraform {
 }
 
 # Configure the AWS Provider
+# NOTE: Using us-east-2 to match backend.tf configuration
 provider "aws" {
   region = "us-east-2"
 }
