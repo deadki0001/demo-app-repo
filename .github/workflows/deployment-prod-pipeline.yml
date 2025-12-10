@@ -194,6 +194,18 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2.0.1
 
+      # Ensure ECR repository exists (idempotent - safe to run multiple times)
+      - name: Create ECR Repository if not exists
+        env:
+          ECR_REPOSITORY: demo-app-images
+        run: |
+          aws ecr describe-repositories --repository-names ${ECR_REPOSITORY} --region ${AWS_REGION} || \
+          aws ecr create-repository \
+            --repository-name ${ECR_REPOSITORY} \
+            --image-scanning-configuration scanOnPush=true \
+            --encryption-configuration encryptionType=AES256 \
+            --region ${AWS_REGION}
+
       - name: Build Container Image
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
