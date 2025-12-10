@@ -1,25 +1,32 @@
-FROM python:3.9-slim
+# Use Python 3.12 (latest stable) with Debian Bookworm (more stable)
+FROM python:3.12-slim-bookworm
 
-# Install required packages
-RUN apt-get update && apt-get install -y nginx default-mysql-client
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    nginx \
+    default-mysql-client \
+    iproute2 \
+    && rm -rf /var/lib/apt/lists/*
 
-# Set up application directory
+# Set working directory
 WORKDIR /app
 
-# Copy requirements and install dependencies
+# Copy requirements and install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application files
+# Copy application code
 COPY app/ /app/
+
+# Copy nginx configuration
 COPY nginx.conf /etc/nginx/sites-available/default
 
-# Make script executable
+# Copy entrypoint script
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-# Expose port 80
+# Expose port
 EXPOSE 80
 
-# Set up entrypoint
+# Run entrypoint
 ENTRYPOINT ["/entrypoint.sh"]
