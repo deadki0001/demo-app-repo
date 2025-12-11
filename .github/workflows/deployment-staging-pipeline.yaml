@@ -178,7 +178,6 @@ jobs:
           aws ecr create-repository \
             --repository-name ${ECR_REPOSITORY} \
             --image-scanning-configuration scanOnPush=true \
-            --encryption-configuration encryptionType=AES256 \
             --region ${AWS_REGION}
 
       - name: Build Container Image

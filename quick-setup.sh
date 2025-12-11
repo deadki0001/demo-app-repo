@@ -23,11 +23,11 @@
 
 # # 3. Update provider.tf region
 # echo "🔧 Updating provider region..."
-# sed -i 's/region = "us-east-2"/region = "us-east-1"/' provider.tf
+# sed -i 's/region = "us-east-2"/region = "us-east-2"/' provider.tf
 
 # # 4. Update backend.tf region if needed
 # echo "🔧 Checking backend configuration..."
-# grep -q "us-east-1" backend.tf || echo "⚠️  WARNING: backend.tf still uses us-east-2"
+# grep -q "us-east-2" backend.tf || echo "⚠️  WARNING: backend.tf still uses us-east-2"
 
 # # 5. Update outputs.tf
 # echo "📝 Updating outputs.tf..."
@@ -95,7 +95,7 @@
 #    - TF_STATE_BUCKET_STAGING: your-staging-state-bucket
 #    - TF_STATE_BUCKET_NONPROD: your-nonprod-state-bucket
 #    - TF_STATE_LOCK_TABLE: terraform-state-lock
-#    - AWS_REGION: us-east-1
+#    - AWS_REGION: us-east-2
 
 # 3. GitHub Environments (3 mins):
 #    Settings → Environments → New environment
@@ -117,7 +117,7 @@
 #    terraform apply -auto-approve
 
 # 6. Configure kubectl (2 mins):
-#    aws eks update-kubeconfig --region us-east-1 --name demo-eks-cluster
+#    aws eks update-kubeconfig --region us-east-2 --name demo-eks-cluster
 #    kubectl get nodes
 #    kubectl get pods -A
 
