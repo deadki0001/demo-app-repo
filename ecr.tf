@@ -7,6 +7,35 @@ resource "aws_kms_key" "ecr" {
   deletion_window_in_days = 7
   enable_key_rotation     = true
 
+  # Explicit key policy for Checkov compliance
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "Enable IAM User Permissions"
+        Effect = "Allow"
+        Principal = {
+          AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"
+        }
+        Action   = "kms:*"
+        Resource = "*"
+      },
+      {
+        Sid    = "Allow ECR to use the key"
+        Effect = "Allow"
+        Principal = {
+          Service = "ecr.amazonaws.com"
+        }
+        Action = [
+          "kms:Decrypt",
+          "kms:DescribeKey",
+          "kms:CreateGrant"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+
   tags = {
     Name        = "ecr-encryption-key"
     Environment = "multi-environment"
@@ -14,12 +43,15 @@ resource "aws_kms_key" "ecr" {
   }
 }
 
+# Get current AWS account ID
+data "aws_caller_identity" "current" {}
+
 resource "aws_kms_alias" "ecr" {
   name          = "alias/ecr-demo-app-images"
   target_key_id = aws_kms_key.ecr.key_id
 }
 
-# checkov:skip=CKV_AWS_51:MUTABLE tags required for demo/dev workflow - allows retagging images
+# checkov:skip=CKV_AWS_51:MUTABLE tags required for demo/dev workflow - allows pushing nonprod-latest, staging-latest tags
 resource "aws_ecr_repository" "demo_ecr_repo" {
   name                 = "demo-app-images"
   image_tag_mutability = "MUTABLE" # For demo - allows pushing same tags (nonprod-latest, etc)
