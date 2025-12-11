@@ -51,7 +51,7 @@ resource "aws_kms_alias" "ecr" {
   target_key_id = aws_kms_key.ecr.key_id
 }
 
-# checkov:skip=CKV_AWS_51:MUTABLE tags required for demo/dev workflow - allows pushing nonprod-latest, staging-latest tags
+#checkov:skip=CKV_AWS_51:MUTABLE tags required for demo/dev workflow - allows pushing nonprod-latest, staging-latest tags
 resource "aws_ecr_repository" "demo_ecr_repo" {
   name                 = "demo-app-images"
   image_tag_mutability = "MUTABLE" # For demo - allows pushing same tags (nonprod-latest, etc)
