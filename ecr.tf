@@ -10,3 +10,4 @@ resource "aws_ecr_repository" "demo_ecr_repo" {
     scan_on_push = true
   }
 }
+#
