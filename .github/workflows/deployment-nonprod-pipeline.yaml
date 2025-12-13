@@ -7,7 +7,6 @@ on:
   pull_request:
     branches:
       - nonprod
-      - main
   workflow_dispatch:  # ADDED: Allow manual trigger for testing
 
 permissions:
