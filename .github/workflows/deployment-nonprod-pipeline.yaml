@@ -210,30 +210,29 @@ jobs:
       - name: Send Status to Discord
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          SEC_STATUS: ${{ needs.security-scan-iac.result == 'success' && '✅ Passed' || '❌ Failed' }}
+          PLAN_STATUS: ${{ needs.terraform-plan.result == 'success' && '✅ Passed' || '❌ Failed' }}
+          APPLY_STATUS: ${{ needs.terraform-apply.result == 'success' && '✅ Applied' || '❌ Failed' }}
+          BUILD_STATUS: ${{ needs.build-and-scan-image.result == 'success' && '✅ Passed' || '❌ Failed' }}
+          OVERALL_STATUS: ${{ (needs.security-scan-iac.result == 'failure' || needs.terraform-plan.result == 'failure' || needs.terraform-apply.result == 'failure' || needs.build-and-scan-image.result == 'failure') && '❌ FAILED' || '✅ SUCCESS' }}
+          OVERALL_COLOR: ${{ (needs.security-scan-iac.result == 'failure' || needs.terraform-plan.result == 'failure' || needs.terraform-apply.result == 'failure' || needs.build-and-scan-image.result == 'failure') && '15158332' || '3066993' }}
         run: |
-          if [ "${{ needs.security-scan-iac.result }}" == "failure" ] || \
-             [ "${{ needs.terraform-plan.result }}" == "failure" ] || \
-             [ "${{ needs.terraform-apply.result }}" == "failure" ] || \
-             [ "${{ needs.build-and-scan-image.result }}" == "failure" ]; then
-            STATUS="❌ FAILED"
-            COLOR="15158332"
-          else
-            STATUS="✅ SUCCESS"
-            COLOR="3066993"
-          fi
-
-          curl -X POST "$DISCORD_WEBHOOK" -H "Content-Type: application/json" -d '{
+          cat > payload.json <<JSON
+          {
             "embeds": [{
               "title": "🔧 NonProd Deployment",
-              "description": "**Status:** '"$STATUS"'\n**Branch:** `${{ github.ref_name }}`\n**By:** ${{ github.actor }}",
-              "color": '"$COLOR"',
+              "description": "**Status:** ${OVERALL_STATUS}\n**Branch:** `${{ github.ref_name }}`\n**By:** ${{ github.actor }}",
+              "color": ${OVERALL_COLOR},
               "fields": [
-                {"name": "🔒 Security", "value": "${{ needs.security-scan-iac.result == '\''success'\'' && '\''✅ Passed'\'' || '\''❌ Failed'\'' }}", "inline": true},
-                {"name": "📋 Plan", "value": "${{ needs.terraform-plan.result == '\''success'\'' && '\''✅ Passed'\'' || '\''❌ Failed'\'' }}", "inline": true},
-                {"name": "🚀 Apply", "value": "${{ needs.terraform-apply.result == '\''success'\'' && '\''✅ Applied'\'' || '\''❌ Failed'\'' }}", "inline": true},
-                {"name": "🐳 Build", "value": "${{ needs.build-and-scan-image.result == '\''success'\'' && '\''✅ Passed'\'' || '\''❌ Failed'\'' }}", "inline": true},
+                {"name": "🔒 Security", "value": "${SEC_STATUS}", "inline": true},
+                {"name": "📋 Plan", "value": "${PLAN_STATUS}", "inline": true},
+                {"name": "🚀 Apply", "value": "${APPLY_STATUS}", "inline": true},
+                {"name": "🐳 Build", "value": "${BUILD_STATUS}", "inline": true},
                 {"name": "🔗 Details", "value": "[View Run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})", "inline": false}
               ],
-              "timestamp": "'"$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"'"
+              "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"
             }]
-          }'
+          }
+          JSON
+
+          curl -sS -X POST "$DISCORD_WEBHOOK" -H "Content-Type: application/json" --data @payload.json
