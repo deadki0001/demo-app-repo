@@ -51,15 +51,14 @@ jobs:
     name: Terraform Plan
     runs-on: ubuntu-22.04
     needs: security-scan-iac
-    container:
-      image: hashicorp/terraform:1.5.7
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4.1.1
 
-      - name: Mark workspace as safe for Git
-        run: |
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.5.7
 
       - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4.0.2
@@ -117,15 +116,14 @@ jobs:
     needs: terraform-plan
     runs-on: ubuntu-22.04
     if: github.event_name == 'push'  # Only auto-deploy on push, not PRs
-    container:
-      image: hashicorp/terraform:1.5.7
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4.1.1
 
-      - name: Mark workspace as safe for Git
-        run: |
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.5.7
 
       - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4.0.2
@@ -158,10 +156,6 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4.1.1
-
-      - name: Mark workspace as safe for Git
-        run: |
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4.0.2
