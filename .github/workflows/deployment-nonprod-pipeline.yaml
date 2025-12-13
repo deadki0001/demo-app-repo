@@ -166,6 +166,7 @@ jobs:
       - name: Create ECR Repository if not exists
         env:
           ECR_REPOSITORY: demo-app-images
+          AWS_REGION: ${{ vars.AWS_REGION }}
         run: |
           aws ecr describe-repositories --repository-names ${ECR_REPOSITORY} --region ${AWS_REGION} || \
           aws ecr create-repository \
