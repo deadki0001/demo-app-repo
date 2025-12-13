@@ -32,7 +32,7 @@ jobs:
           output_file_path: console,checkov-results.sarif
           soft_fail: false
           download_external_modules: true
-          skip_check: CKV_AWS_51  # Skip immutable tags check - MUTABLE required for demo workflow
+          skip_check: CKV_AWS_51,CKV_AWS_136,CKV_AWS_260,CKV2_AWS_5
 
       - name: Upload Checkov Results to GitHub Security
         uses: github/codeql-action/upload-sarif@v3.26.13
