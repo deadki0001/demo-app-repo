@@ -29,6 +29,8 @@ jobs:
 
       - name: Run Checkov IaC Security Scan
         uses: bridgecrewio/checkov-action@v12.2867.0
+        env:
+            GIT_CONFIG_GLOBAL: /tmp/.gitconfig
         with:
           directory: .
           framework: terraform
