@@ -7,6 +7,7 @@ on:
   pull_request:
     branches:
       - nonprod
+  workflow_dispatch:  # ADDED: Allow manual trigger for testing
 
 permissions:
   id-token: write      # Required for OIDC
@@ -22,8 +23,6 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4.1.1
 
-      # Checkov scans our Terraform files for security misconfigurations
-      # This catches things like unencrypted storage, overly permissive security groups, etc.
       - name: Run Checkov IaC Security Scan
         uses: bridgecrewio/checkov-action@v12.2867.0
         with:
@@ -31,10 +30,10 @@ jobs:
           framework: terraform
           output_format: cli,sarif
           output_file_path: console,checkov-results.sarif
-          soft_fail: false  # Fail the build if critical issues found
+          soft_fail: false
           download_external_modules: true
+          skip_check: CKV_AWS_51  # Skip immutable tags check - MUTABLE required for demo workflow
 
-      # Upload results to GitHub Security tab for tracking
       - name: Upload Checkov Results to GitHub Security
         uses: github/codeql-action/upload-sarif@v3.26.13
         if: always()
@@ -49,16 +48,15 @@ jobs:
       image: hashicorp/terraform:1.5.7
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.1.1
 
-      # OIDC authentication - no stored credentials!
-      # GitHub generates a temporary token that AWS trusts
       - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4.0.2
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN_NONPROD }}
           aws-region: ${{ vars.AWS_REGION }}
-          role-session-name: GitHubActions-NonProd-TerraformPlan
+          role-session-name: GHA-NonProd-Plan-${{ github.sha }}
+          role-duration-seconds: 3600
 
       - name: Initialize Terraform
         run: |
@@ -77,11 +75,9 @@ jobs:
       - name: Terraform Plan
         run: terraform plan -out=tfplan.binary
 
-      # Convert plan to JSON so Checkov can analyze what we're about to deploy
       - name: Convert Plan to JSON for Security Analysis
         run: terraform show -json tfplan.binary > tfplan.json
 
-      # Scan the actual plan output - this catches computed values and dynamic resources
       - name: Run Checkov on Terraform Plan
         uses: bridgecrewio/checkov-action@v12.2867.0
         with:
@@ -90,6 +86,7 @@ jobs:
           output_format: cli,sarif
           output_file_path: console,checkov-plan-results.sarif
           soft_fail: false
+          skip_check: CKV_AWS_51  # Skip immutable tags check - MUTABLE required for demo workflow
 
       - name: Upload Checkov Plan Results
         uses: github/codeql-action/upload-sarif@v3.26.13
@@ -113,14 +110,15 @@ jobs:
       image: hashicorp/terraform:1.5.7
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.1.1
 
       - name: Configure AWS Credentials via OIDC
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v4.0.2
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN_NONPROD }}
           aws-region: ${{ vars.AWS_REGION }}
-          role-session-name: GitHubActions-NonProd-TerraformApply
+          role-session-name: GHA-NonProd-Apply-${{ github.sha }}
+          role-duration-seconds: 3600
 
       - name: Initialize Terraform
         run: |
@@ -138,29 +136,36 @@ jobs:
       - name: Apply Infrastructure
         run: terraform apply -auto-approve tfplan.binary
 
-      - name: Save Terraform Outputs
-        id: tf-outputs
-        run: |
-          echo "eks_cluster_name=$(terraform output -raw cluster_name 2>/dev/null || echo 'not-created')" >> $GITHUB_OUTPUT
-
   build-and-scan-image:
     name: Build & Scan Container Image
     needs: terraform-apply
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.1.1
 
       - name: Configure AWS Credentials via OIDC
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v4.0.2
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN_NONPROD }}
           aws-region: ${{ vars.AWS_REGION }}
-          role-session-name: GitHubActions-NonProd-ImageBuild
+          role-session-name: GHA-NonProd-Build-${{ github.sha }}
+          role-duration-seconds: 3600
 
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2.0.1
+
+      - name: Create ECR Repository if not exists
+        env:
+          ECR_REPOSITORY: demo-app-images
+          AWS_REGION: ${{ vars.AWS_REGION }}
+        run: |
+          aws ecr describe-repositories --repository-names ${ECR_REPOSITORY} --region ${AWS_REGION} || \
+          aws ecr create-repository \
+            --repository-name ${ECR_REPOSITORY} \
+            --image-scanning-configuration scanOnPush=true \
+            --region ${AWS_REGION}
 
       - name: Build Container Image
         env:
@@ -171,8 +176,6 @@ jobs:
           docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -f docker/Dockerfile docker/
           docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:nonprod-latest
 
-      # Trivy scans for vulnerabilities in our container image
-      # NonProd environment: we scan but don't block on vulnerabilities (soft_fail)
       - name: Run Trivy Security Scan
         uses: aquasecurity/trivy-action@0.28.0
         with:
@@ -181,6 +184,7 @@ jobs:
           output: 'trivy-results.sarif'
           severity: 'CRITICAL,HIGH'
           exit-code: '0'  # Don't fail build in nonprod
+          ignore-unfixed: true  # Only report vulnerabilities with available fixes
 
       - name: Upload Trivy Results
         uses: github/codeql-action/upload-sarif@v3.26.13
@@ -196,3 +200,40 @@ jobs:
         run: |
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:nonprod-latest
+
+  notify-discord:
+    name: Discord Notification
+    runs-on: ubuntu-22.04
+    if: always()
+    needs: [security-scan-iac, terraform-plan, terraform-apply, build-and-scan-image]
+    steps:
+      - name: Send Status to Discord
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          if [ "${{ needs.security-scan-iac.result }}" == "failure" ] || \
+             [ "${{ needs.terraform-plan.result }}" == "failure" ] || \
+             [ "${{ needs.terraform-apply.result }}" == "failure" ] || \
+             [ "${{ needs.build-and-scan-image.result }}" == "failure" ]; then
+            STATUS="❌ FAILED"
+            COLOR="15158332"
+          else
+            STATUS="✅ SUCCESS"
+            COLOR="3066993"
+          fi
+
+          curl -X POST "$DISCORD_WEBHOOK" -H "Content-Type: application/json" -d '{
+            "embeds": [{
+              "title": "🔧 NonProd Deployment",
+              "description": "**Status:** '"$STATUS"'\n**Branch:** `${{ github.ref_name }}`\n**By:** ${{ github.actor }}",
+              "color": '"$COLOR"',
+              "fields": [
+                {"name": "🔒 Security", "value": "${{ needs.security-scan-iac.result == '\''success'\'' && '\''✅ Passed'\'' || '\''❌ Failed'\'' }}", "inline": true},
+                {"name": "📋 Plan", "value": "${{ needs.terraform-plan.result == '\''success'\'' && '\''✅ Passed'\'' || '\''❌ Failed'\'' }}", "inline": true},
+                {"name": "🚀 Apply", "value": "${{ needs.terraform-apply.result == '\''success'\'' && '\''✅ Applied'\'' || '\''❌ Failed'\'' }}", "inline": true},
+                {"name": "🐳 Build", "value": "${{ needs.build-and-scan-image.result == '\''success'\'' && '\''✅ Passed'\'' || '\''❌ Failed'\'' }}", "inline": true},
+                {"name": "🔗 Details", "value": "[View Run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})", "inline": false}
+              ],
+              "timestamp": "'"$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"'"
+            }]
+          }'
