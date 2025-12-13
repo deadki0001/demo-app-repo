@@ -23,6 +23,10 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4.1.1
 
+      - name: Mark workspace as safe for Git
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
       - name: Run Checkov IaC Security Scan
         uses: bridgecrewio/checkov-action@v12.2867.0
         with:
@@ -33,6 +37,7 @@ jobs:
           soft_fail: false
           download_external_modules: true
           skip_check: CKV_AWS_51,CKV_AWS_136,CKV_AWS_260,CKV2_AWS_5
+          
 
       - name: Upload Checkov Results to GitHub Security
         uses: github/codeql-action/upload-sarif@v3.26.13
@@ -49,6 +54,10 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4.1.1
+
+      - name: Mark workspace as safe for Git
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4.0.2
@@ -112,6 +121,10 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4.1.1
 
+      - name: Mark workspace as safe for Git
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
       - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4.0.2
         with:
@@ -143,6 +156,10 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4.1.1
+
+      - name: Mark workspace as safe for Git
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4.0.2
