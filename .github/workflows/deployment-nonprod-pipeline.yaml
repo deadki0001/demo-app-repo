@@ -7,6 +7,7 @@ on:
   pull_request:
     branches:
       - nonprod
+  workflow_dispatch:  # ADDED: Allow manual trigger for testing
 
 permissions:
   id-token: write      # Required for OIDC
@@ -22,8 +23,6 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4.1.1
 
-      # Checkov scans our Terraform files for security misconfigurations
-      # This catches things like unencrypted storage, overly permissive security groups, etc.
       - name: Run Checkov IaC Security Scan
         uses: bridgecrewio/checkov-action@v12.2867.0
         with:
@@ -31,11 +30,10 @@ jobs:
           framework: terraform
           output_format: cli,sarif
           output_file_path: console,checkov-results.sarif
-          soft_fail: false  # Fail the build if critical issues found
+          soft_fail: false
           download_external_modules: true
           skip_check: CKV_AWS_51  # Skip immutable tags check - MUTABLE required for demo workflow
 
-      # Upload results to GitHub Security tab for tracking
       - name: Upload Checkov Results to GitHub Security
         uses: github/codeql-action/upload-sarif@v3.26.13
         if: always()
@@ -52,8 +50,6 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4.1.1
 
-      # OIDC authentication - no stored credentials!
-      # GitHub generates a temporary token that AWS trusts
       - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4.0.2
         with:
@@ -79,11 +75,9 @@ jobs:
       - name: Terraform Plan
         run: terraform plan -out=tfplan.binary
 
-      # Convert plan to JSON so Checkov can analyze what we're about to deploy
       - name: Convert Plan to JSON for Security Analysis
         run: terraform show -json tfplan.binary > tfplan.json
 
-      # Scan the actual plan output - this catches computed values and dynamic resources
       - name: Run Checkov on Terraform Plan
         uses: bridgecrewio/checkov-action@v12.2867.0
         with:
@@ -162,7 +156,6 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2.0.1
 
-      # Ensure ECR repository exists (idempotent - safe to run multiple times)
       - name: Create ECR Repository if not exists
         env:
           ECR_REPOSITORY: demo-app-images
@@ -183,8 +176,6 @@ jobs:
           docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -f docker/Dockerfile docker/
           docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:nonprod-latest
 
-      # Trivy scans for vulnerabilities in our container image
-      # NonProd environment: we scan but don't block on vulnerabilities (soft_fail)
       - name: Run Trivy Security Scan
         uses: aquasecurity/trivy-action@0.28.0
         with:

@@ -31,7 +31,7 @@ jobs:
           output_file_path: console,checkov-results.sarif
           soft_fail: false
           download_external_modules: true
-          skip_check: CKV_AWS_51
+          skip_check: CKV_AWS_51  # CRITICAL: Skip immutable tags check
 
       - name: Upload Checkov Results to GitHub Security
         uses: github/codeql-action/upload-sarif@v3.26.13
@@ -49,7 +49,6 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4.1.1
 
-      # Staging uses its own AWS account and IAM role
       - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4.0.2
         with:
@@ -86,7 +85,7 @@ jobs:
           output_format: cli,sarif
           output_file_path: console,checkov-plan-results.sarif
           soft_fail: false
-          skip_check: CKV_AWS_51
+          skip_check: CKV_AWS_51  # CRITICAL: Skip immutable tags check
 
       - name: Upload Checkov Plan Results
         uses: github/codeql-action/upload-sarif@v3.26.13
@@ -101,7 +100,6 @@ jobs:
           path: tfplan.binary
           retention-days: 5
 
-  # Staging requires manual approval before deploying
   manual-approval:
     name: Staging Deployment Approval
     needs: terraform-plan
@@ -171,7 +169,6 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2.0.1
 
-      # Ensure ECR repository exists
       - name: Create ECR Repository if not exists
         env:
           ECR_REPOSITORY: demo-app-images
@@ -192,7 +189,6 @@ jobs:
           docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -f docker/Dockerfile docker/
           docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:staging-latest
 
-      # Staging has stricter security scanning - we fail on HIGH and CRITICAL vulnerabilities
       - name: Run Trivy Security Scan (Strict)
         uses: aquasecurity/trivy-action@0.28.0
         with:
