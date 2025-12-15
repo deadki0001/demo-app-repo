@@ -5,7 +5,7 @@
 
 terraform {
   backend "s3" {
-    bucket         = "deadki-terraform-staging-state-bucket"
+    bucket         = "deadki-terraform-staging-uat-state-bucket"
     key            = "terraform-staging.tfstate"
     region         = "us-east-2"
     encrypt        = true
