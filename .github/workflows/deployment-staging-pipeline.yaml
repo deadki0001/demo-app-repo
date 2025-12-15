@@ -34,7 +34,7 @@ jobs:
           output_file_path: console,checkov-results.sarif
           soft_fail: true
           download_external_modules: true
-          skip_check: CKV_AWS_51,CKV_AWS_136,CKV_AWS_260,CKV2_AWS_5
+          skip_check: CKV_AWS_51  # CRITICAL: Skip immutable tags check
 
       - name: Upload Checkov Results to GitHub Security
         uses: github/codeql-action/upload-sarif@v3.26.13
@@ -49,11 +49,6 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4.1.1
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: 1.5.7
 
       - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4.0.2
@@ -84,16 +79,14 @@ jobs:
         run: terraform show -json tfplan.binary > tfplan.json
 
       - name: Run Checkov on Terraform Plan
-        id: checkov-plan
         uses: bridgecrewio/checkov-action@v12.2867.0
-        continue-on-error: true
         with:
           file: tfplan.json
           framework: terraform_plan
           output_format: cli,sarif
           output_file_path: console,checkov-plan-results.sarif
-          soft_fail: true
-          skip_check: CKV_AWS_51,CKV2_AWS_5,CKV_AWS_260
+          soft_fail: false
+          skip_check: CKV_AWS_51  # CRITICAL: Skip immutable tags check
 
       - name: Upload Checkov Plan Results
         uses: github/codeql-action/upload-sarif@v3.26.13
@@ -108,6 +101,21 @@ jobs:
           path: tfplan.binary
           retention-days: 5
 
+  manual-approval:
+    name: Staging Deployment Approval
+    needs: terraform-plan
+    runs-on: ubuntu-22.04
+    if: github.event_name == 'push'
+    environment: 
+      name: staging
+      url: https://github.com/${{ github.repository }}/actions
+    steps:
+      - name: Approval Gate
+        run: |
+          echo "✅ Deployment to staging approved by ${{ github.actor }}"
+          echo "📅 Timestamp: $(date -u +"%Y-%m-%d %H:%M:%S UTC")"
+          echo "📝 Commit SHA: ${{ github.sha }}"
+
   terraform-apply:
     name: Apply Infrastructure
     needs: terraform-plan
@@ -116,11 +124,6 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4.1.1
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: 1.5.7
 
       - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4.0.2
@@ -186,14 +189,14 @@ jobs:
           docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -f docker/Dockerfile docker/
           docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:staging-latest
 
-      - name: Run Trivy Security Scan
+      - name: Run Trivy Security Scan (Strict)
         uses: aquasecurity/trivy-action@0.28.0
         with:
           image-ref: ${{ steps.login-ecr.outputs.registry }}/demo-app-images:${{ github.sha }}
           format: 'sarif'
           output: 'trivy-results.sarif'
           severity: 'CRITICAL,HIGH'
-          exit-code: '0'
+          exit-code: '1'
           ignore-unfixed: true
 
       - name: Upload Trivy Results

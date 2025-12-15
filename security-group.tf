@@ -1,3 +1,4 @@
+
 // Terraform code referenced from https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources
 // For a complete list of configuration items you are welcome to visit the above link.
 

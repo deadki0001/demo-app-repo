@@ -69,6 +69,83 @@ resource "aws_default_security_group" "default" {
 #   })
 # }
 
+# resource "aws_iam_role_policy_attachment" "eks_worker_node_policy" {
+#   policy_arn = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
+#   role       = aws_iam_role.eks_nodes.name
+# }
+
+# resource "aws_iam_role_policy_attachment" "eks_cni_policy" {
+#   policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
+#   role       = aws_iam_role.eks_nodes.name
+# }
+
+# resource "aws_iam_role_policy_attachment" "eks_container_registry" {
+#   policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+#   role       = aws_iam_role.eks_nodes.name
+# }
+
+# # EKS Node Group
+# resource "aws_eks_node_group" "demo" {
+#   cluster_name    = aws_eks_cluster.demo.name
+#   node_group_name = "demo-node-group"
+#   node_role_arn   = aws_iam_role.eks_nodes.arn
+#   subnet_ids      = [
+#     aws_subnet.demo_private_subnet_1.id,
+#     aws_subnet.demo_private_subnet_2.id
+#   ]
+
+#   scaling_config {
+#     desired_size = 2
+#     max_size     = 3
+#     min_size     = 1
+#   }
+
+#   instance_types = ["t3.small"]
+
+#   update_config {
+#     max_unavailable = 1
+#   }
+
+#   depends_on = [
+#     aws_iam_role_policy_attachment.eks_worker_node_policy,
+#     aws_iam_role_policy_attachment.eks_cni_policy,
+#     aws_iam_role_policy_attachment.eks_container_registry,
+#   ]
+
+#   tags = {
+#     Name = "demo-eks-nodes"
+#   }
+# }
+
+# # OIDC Provider for IRSA (IAM Roles for Service Accounts)
+# data "tls_certificate" "eks" {
+#   url = aws_eks_cluster.demo.identity[0].oidc[0].issuer
+# }
+
+# resource "aws_iam_openid_connect_provider" "eks" {
+#   client_id_list  = ["sts.amazonaws.com"]
+#   thumbprint_list = [data.tls_certificate.eks.certificates[0].sha1_fingerprint]
+#   url             = aws_eks_cluster.demo.identity[0].oidc[0].issuer
+
+#   tags = {
+#     Name = "eks-oidc-provider"
+#   }
+# }
+
+# # Output for kubectl config
+# output "eks_cluster_endpoint" {
+#   value = aws_eks_cluster.demo.endpoint
+# }
+
+# output "eks_cluster_name" {
+#   value = aws_eks_cluster.demo.name
+# }
+
+# output "configure_kubectl" {
+#   value = "aws eks update-kubeconfig --region us-east-1 --name ${aws_eks_cluster.demo.name}"
+# }
+#
+
 // Think of an Internet gateway like your Router - giving Internet Access to Your VPC
 // A Internet Gateway can be attached to the VPC, this enables internet access.
 // Much like before to create the resource, the boolean value must be set to true.
