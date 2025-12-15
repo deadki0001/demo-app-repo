@@ -76,10 +76,10 @@ resource "aws_subnet" "demo_private_subnet_1" {
   cidr_block        = "10.0.1.0/24"
 
   tags = {
-    Name                                          = "demo_private_subnet_1"
-    Environment                                   = var.environment
-    "kubernetes.io/role/internal-elb"             = "1"
-    "kubernetes.io/cluster/demo-eks-cluster"      = "shared"
+    Name                                     = "demo_private_subnet_1"
+    Environment                              = var.environment
+    "kubernetes.io/role/internal-elb"        = "1"
+    "kubernetes.io/cluster/demo-eks-cluster" = "shared"
   }
 }
 
@@ -89,10 +89,10 @@ resource "aws_subnet" "demo_private_subnet_2" {
   cidr_block        = "10.0.3.0/24"
 
   tags = {
-    Name                                          = "demo_private_subnet_2"
-    Environment                                   = var.environment
-    "kubernetes.io/role/internal-elb"             = "1"
-    "kubernetes.io/cluster/demo-eks-cluster"      = "shared"
+    Name                                     = "demo_private_subnet_2"
+    Environment                              = var.environment
+    "kubernetes.io/role/internal-elb"        = "1"
+    "kubernetes.io/cluster/demo-eks-cluster" = "shared"
   }
 }
 

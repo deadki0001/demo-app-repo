@@ -45,7 +45,7 @@ provider "tls" {}
 # -----------------------------------------------------------------------------
 locals {
   name_prefix = "${var.environment}-demo"
-  
+
   common_tags = {
     Project     = "Demo Application"
     Environment = var.environment
