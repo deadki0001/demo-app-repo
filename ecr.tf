@@ -5,7 +5,7 @@
 data "aws_caller_identity" "current" {}
 
 resource "aws_kms_key" "ecr_kms" {
-  description             = "KMS key for ECR encryption (staging)"
+  description             = "KMS key for ECR encryption (nonprod)"
   deletion_window_in_days = 7
   enable_key_rotation     = true
 
