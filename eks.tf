@@ -1,157 +1,195 @@
-# # EKS Cluster - Simple Public Setup for Demo
-# # Security features: KMS encryption, audit logs, restricted RBAC
+# // Terraform code referenced from https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources
+# // For a complete list of configuration items you are welcome to visit the above link.
+# // For a more ind depth read on VPC's, I have included a readme.txt with the AWS Whitepaper which will provide you with any additional context.
 
-# # KMS key for EKS secrets encryption
-# resource "aws_kms_key" "eks" {
-#   description             = "EKS Secrets Encryption"
-#   deletion_window_in_days = 7
-#   enable_key_rotation     = true
-# }
-
-# # EKS Cluster IAM Role
-# resource "aws_iam_role" "eks_cluster" {
-#   name = "demo-eks-cluster-role"
-
-#   assume_role_policy = jsonencode({
-#     Version = "2012-10-17"
-#     Statement = [{
-#       Effect = "Allow"
-#       Principal = {
-#         Service = "eks.amazonaws.com"
-#       }
-#       Action = "sts:AssumeRole"
-#     }]
-#   })
-# }
-
-# resource "aws_iam_role_policy_attachment" "eks_cluster_policy" {
-#   policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
-#   role       = aws_iam_role.eks_cluster.name
-# }
-
-# # EKS Cluster
-# resource "aws_eks_cluster" "demo" {
-#   name     = "demo-eks-cluster"
-#   role_arn = aws_iam_role.eks_cluster.arn
-#   version  = "1.28"
-
-#   vpc_config {
-#     subnet_ids              = [
-#       aws_subnet.demo_public_subnet_1.id,
-#       aws_subnet.demo_private_subnet_1.id,
-#       aws_subnet.demo_private_subnet_2.id
-#     ]
-#     endpoint_public_access  = true  # Public for demo
-#     endpoint_private_access = true
-#     public_access_cidrs     = ["0.0.0.0/0"]  # Lock this down to your IP in production
-#   }
-
-#   encryption_config {
-#     provider {
-#       key_arn = aws_kms_key.eks.arn
-#     }
-#     resources = ["secrets"]
-#   }
-
-#   enabled_cluster_log_types = ["api", "audit", "authenticator", "controllerManager", "scheduler"]
-
-#   depends_on = [
-#     aws_iam_role_policy_attachment.eks_cluster_policy
-#   ]
+# # checkov:skip=CKV2_AWS_11:VPC flow logging disabled for demo environment to reduce costs
+# # checkov:skip=CKV2_AWS_12:Default security group restrictions handled separately
+# resource "aws_vpc" "demo_application_vpc" {
+#   cidr_block = "10.0.0.0/16" // = 65, 536 usable addresses within this given network
 
 #   tags = {
-#     Name = "demo-eks-cluster"
+#     Name       = "demo-application-vpc"
+#     Managed_by = "Terraform"
 #   }
 # }
 
-# # Node IAM Role
-# resource "aws_iam_role" "eks_nodes" {
-#   name = "demo-eks-node-role"
+# // Restrict the default security group - fixes CKV2_AWS_12
+# resource "aws_default_security_group" "default" {
+#   vpc_id = aws_vpc.demo_application_vpc.id
 
-#   assume_role_policy = jsonencode({
-#     Version = "2012-10-17"
-#     Statement = [{
-#       Effect = "Allow"
-#       Principal = {
-#         Service = "ec2.amazonaws.com"
-#       }
-#       Action = "sts:AssumeRole"
-#     }]
-#   })
-# }
-
-# resource "aws_iam_role_policy_attachment" "eks_worker_node_policy" {
-#   policy_arn = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
-#   role       = aws_iam_role.eks_nodes.name
-# }
-
-# resource "aws_iam_role_policy_attachment" "eks_cni_policy" {
-#   policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
-#   role       = aws_iam_role.eks_nodes.name
-# }
-
-# resource "aws_iam_role_policy_attachment" "eks_container_registry" {
-#   policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
-#   role       = aws_iam_role.eks_nodes.name
-# }
-
-# # EKS Node Group
-# resource "aws_eks_node_group" "demo" {
-#   cluster_name    = aws_eks_cluster.demo.name
-#   node_group_name = "demo-node-group"
-#   node_role_arn   = aws_iam_role.eks_nodes.arn
-#   subnet_ids      = [
-#     aws_subnet.demo_private_subnet_1.id,
-#     aws_subnet.demo_private_subnet_2.id
-#   ]
-
-#   scaling_config {
-#     desired_size = 2
-#     max_size     = 3
-#     min_size     = 1
+#   # No ingress or egress rules - all traffic blocked
+#   tags = {
+#     Name = "demo-vpc-default-sg-restricted"
 #   }
+# }
 
-#   instance_types = ["t3.small"]
+# // Optional: Enable VPC Flow Logs (uncomment for production)
+# // This addresses CKV2_AWS_11 but adds cost, so keeping it commented for demo
+# # resource "aws_flow_log" "demo_vpc_flow_log" {
+# #   vpc_id          = aws_vpc.demo_application_vpc.id
+# #   traffic_type    = "ALL"
+# #   iam_role_arn    = aws_iam_role.vpc_flow_log_role.arn
+# #   log_destination = aws_cloudwatch_log_group.vpc_flow_log.arn
+# # }
 
-#   update_config {
-#     max_unavailable = 1
-#   }
+# # resource "aws_cloudwatch_log_group" "vpc_flow_log" {
+# #   name              = "/aws/vpc/demo-application-vpc"
+# #   retention_in_days = 7
+# # }
 
-#   depends_on = [
-#     aws_iam_role_policy_attachment.eks_worker_node_policy,
-#     aws_iam_role_policy_attachment.eks_cni_policy,
-#     aws_iam_role_policy_attachment.eks_container_registry,
-#   ]
+# # resource "aws_iam_role" "vpc_flow_log_role" {
+# #   name = "vpc-flow-log-role"
+# #   assume_role_policy = jsonencode({
+# #     Version = "2012-10-17"
+# #     Statement = [{
+# #       Effect = "Allow"
+# #       Principal = {
+# #         Service = "vpc-flow-logs.amazonaws.com"
+# #       }
+# #       Action = "sts:AssumeRole"
+# #     }]
+# #   })
+# # }
+
+# # resource "aws_iam_role_policy" "vpc_flow_log_policy" {
+# #   role = aws_iam_role.vpc_flow_log_role.id
+# #   policy = jsonencode({
+# #     Version = "2012-10-17"
+# #     Statement = [{
+# #       Effect = "Allow"
+# #       Action = [
+# #         "logs:CreateLogGroup",
+# #         "logs:CreateLogStream",
+# #         "logs:PutLogEvents",
+# #         "logs:DescribeLogGroups",
+# #         "logs:DescribeLogStreams"
+# #       ]
+# #       Resource = "*"
+# #     }]
+# #   })
+# # }
+
+# // Think of an Internet gateway like your Router - giving Internet Access to Your VPC
+# // A Internet Gateway can be attached to the VPC, this enables internet access.
+# // Much like before to create the resource, the boolean value must be set to true.
+
+# resource "aws_internet_gateway" "internet_gateway" {
+#   vpc_id = aws_vpc.demo_application_vpc.id
 
 #   tags = {
-#     Name = "demo-eks-nodes"
+#     Name = "demo-igw"
 #   }
 # }
 
-# # OIDC Provider for IRSA (IAM Roles for Service Accounts)
-# data "tls_certificate" "eks" {
-#   url = aws_eks_cluster.demo.identity[0].oidc[0].issuer
+# // A public subnet will always have direct access to the internet
+# // Subnets are associated to a specific route, for an example a route out to the internet or local connectivity.
+# // These routes are managed by what we refer to as a Route Table.
+
+# resource "aws_subnet" "demo_public_subnet_1" {
+#   vpc_id            = aws_vpc.demo_application_vpc.id
+#   availability_zone = "us-east-2a"
+#   cidr_block        = "10.0.2.0/24"
+#   tags = {
+#     Name = "demo_public_subnet_1"
+#   }
 # }
 
-# resource "aws_iam_openid_connect_provider" "eks" {
-#   client_id_list  = ["sts.amazonaws.com"]
-#   thumbprint_list = [data.tls_certificate.eks.certificates[0].sha1_fingerprint]
-#   url             = aws_eks_cluster.demo.identity[0].oidc[0].issuer
+# // Availability zones are similar to Data Centers, we haouse our applications
+# // further availibility zones can be added to the above list using the following expressions ["us-east-2b", "us-east-2c"]
+# // In this demo we will only be deploying one availability zone. 
+
+# resource "aws_subnet" "demo_private_subnet_1" {
+#   vpc_id            = aws_vpc.demo_application_vpc.id
+#   availability_zone = "us-east-2a"
+#   cidr_block        = "10.0.1.0/24"
 
 #   tags = {
-#     Name = "eks-oidc-provider"
+#     Name = "demo_private_subnet_1"
 #   }
 # }
 
-# # Output for kubectl config
-# output "eks_cluster_endpoint" {
-#   value = aws_eks_cluster.demo.endpoint
+# resource "aws_subnet" "demo_private_subnet_2" {
+#   vpc_id            = aws_vpc.demo_application_vpc.id
+#   availability_zone = "us-east-2b"
+#   cidr_block        = "10.0.3.0/24"
+
+#   tags = {
+#     Name = "demo_private_subnet_2"
+#   }
 # }
 
-# output "eks_cluster_name" {
-#   value = aws_eks_cluster.demo.name
+# // Private subnets are used to communicate locally within a given network, they have various use cases.
+# // A subnet characteristics is simply defined on where it has direct access to the internet using an Internet Gateway.
+# // More on Internet Gateways below
+
+# resource "aws_eip" "nat_gw_eip" {
+#   domain = "vpc"
+
+#   tags = {
+#     Name = "eip-reserved-for-nat-gw"
+#   }
 # }
 
-# output "configure_kubectl" {
-#   value = "aws eks update-kubeconfig --region us-east-1 --name ${aws_eks_cluster.demo.name}"
+# // Our NAT Gateway will ensure that we can provide internet access to our apps or Databases if need be.
+# // The NAT Gateway is a fully managed service by AWS. 
+
+# resource "aws_nat_gateway" "demo_nat_gw" {
+#   allocation_id = aws_eip.nat_gw_eip.id
+#   subnet_id     = aws_subnet.demo_public_subnet_1.id
+
+#   tags = {
+#     Name = "demo-nat-gateway"
+#   }
+# }
+
+# // As mentioned above - Route Tables are used to direct network traffic around your VPC. 
+# // This is the fun part - for example we can now create a Public Route Table (This would be for Public Connectivity - In terms of the Internet)
+# // We can also create the Private Route Table in terms of Local Network Traffic and not forgetting our NAT gateway!
+
+# resource "aws_route_table" "demo_public_route_table" {
+#   vpc_id = aws_vpc.demo_application_vpc.id
+
+#   route {
+#     cidr_block = "0.0.0.0/0"                            // this is where we declare what CIDR Range traverse in the route table
+#     gateway_id = aws_internet_gateway.internet_gateway.id // This is how we actually declare the public route table and provide direct internet access to our subnet.
+#   }
+
+#   tags = {
+#     Name = "demo-public-route-table"
+#   }
+# }
+
+# resource "aws_route_table" "demo_private_route_table" {
+#   vpc_id = aws_vpc.demo_application_vpc.id
+
+#   route {
+#     cidr_block     = "0.0.0.0/0"                 // This is where we declare what CIDR Range can traverse in the route table
+#     nat_gateway_id = aws_nat_gateway.demo_nat_gw.id // Take note of the difference, for the Private Route Table, we adding the Managed NAT Gateway
+#   }                                                 // Should you see this in a given configuration you know this has to be a private subnet!
+
+#   tags = {
+#     Name = "demo-private-route-table"
+#   }
+# }
+
+# // Ok Perfect we have alot of the building blocks together to form a fully functional VPC.
+# // Now that we have created the Route Tables, we must actually ASSOCIATE our newly created subnets to each respective Route Table.
+# // We achive this using the Terrform Resource called aws_route_table_association
+
+# resource "aws_route_table_association" "demo_public_subnet_association" {
+#   subnet_id      = aws_subnet.demo_public_subnet_1.id
+#   route_table_id = aws_route_table.demo_public_route_table.id
+# }
+
+# // Just like that we associated the above public subnet to the public route-table - easy peasy japanesy :) 
+# // Lastly we are going to associate our private subnet to our private route table
+
+# resource "aws_route_table_association" "demo_private_subnet_association" {
+#   subnet_id      = aws_subnet.demo_private_subnet_1.id
+#   route_table_id = aws_route_table.demo_private_route_table.id
+# }
+
+# resource "aws_route_table_association" "demo_private_subnet_2_association" {
+#   subnet_id      = aws_subnet.demo_private_subnet_2.id
+#   route_table_id = aws_route_table.demo_private_route_table.id
 # }
