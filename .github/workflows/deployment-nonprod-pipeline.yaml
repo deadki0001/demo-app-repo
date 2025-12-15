@@ -7,7 +7,6 @@ on:
   pull_request:
     branches:
       - nonprod
-  workflow_dispatch:  # ADDED: Allow manual trigger for testing
 
 permissions:
   id-token: write      # Required for OIDC
@@ -23,20 +22,20 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4.1.1
 
+      # Checkov scans our Terraform files for security misconfigurations
+      # This catches things like unencrypted storage, overly permissive security groups, etc.
       - name: Run Checkov IaC Security Scan
-        id: checkov-iac
         uses: bridgecrewio/checkov-action@v12.2867.0
-        continue-on-error: true
         with:
           directory: .
           framework: terraform
           output_format: cli,sarif
           output_file_path: console,checkov-results.sarif
-          soft_fail: true
+          soft_fail: false  # Fail the build if critical issues found
           download_external_modules: true
-          skip_check: CKV_AWS_51,CKV_AWS_136,CKV_AWS_260,CKV2_AWS_5
-          
+          skip_check: CKV_AWS_51  # Skip immutable tags check - MUTABLE required for demo workflow
 
+      # Upload results to GitHub Security tab for tracking
       - name: Upload Checkov Results to GitHub Security
         uses: github/codeql-action/upload-sarif@v3.26.13
         if: always()
@@ -47,15 +46,14 @@ jobs:
     name: Terraform Plan
     runs-on: ubuntu-22.04
     needs: security-scan-iac
+    container:
+      image: hashicorp/terraform:1.5.7
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4.1.1
 
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: 1.5.7
-
+      # OIDC authentication - no stored credentials!
+      # GitHub generates a temporary token that AWS trusts
       - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4.0.2
         with:
@@ -81,20 +79,20 @@ jobs:
       - name: Terraform Plan
         run: terraform plan -out=tfplan.binary
 
+      # Convert plan to JSON so Checkov can analyze what we're about to deploy
       - name: Convert Plan to JSON for Security Analysis
         run: terraform show -json tfplan.binary > tfplan.json
 
+      # Scan the actual plan output - this catches computed values and dynamic resources
       - name: Run Checkov on Terraform Plan
-        id: checkov-plan
         uses: bridgecrewio/checkov-action@v12.2867.0
-        continue-on-error: true
         with:
           file: tfplan.json
           framework: terraform_plan
           output_format: cli,sarif
           output_file_path: console,checkov-plan-results.sarif
-          soft_fail: true
-          skip_check: CKV_AWS_51,CKV2_AWS_5,CKV_AWS_260
+          soft_fail: false
+          skip_check: CKV_AWS_51  # Skip immutable tags check - MUTABLE required for demo workflow
 
       - name: Upload Checkov Plan Results
         uses: github/codeql-action/upload-sarif@v3.26.13
@@ -114,14 +112,11 @@ jobs:
     needs: terraform-plan
     runs-on: ubuntu-22.04
     if: github.event_name == 'push'  # Only auto-deploy on push, not PRs
+    container:
+      image: hashicorp/terraform:1.5.7
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4.1.1
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: 1.5.7
 
       - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4.0.2
@@ -167,10 +162,10 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2.0.1
 
+      # Ensure ECR repository exists (idempotent - safe to run multiple times)
       - name: Create ECR Repository if not exists
         env:
           ECR_REPOSITORY: demo-app-images
-          AWS_REGION: ${{ vars.AWS_REGION }}
         run: |
           aws ecr describe-repositories --repository-names ${ECR_REPOSITORY} --region ${AWS_REGION} || \
           aws ecr create-repository \
@@ -187,6 +182,8 @@ jobs:
           docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -f docker/Dockerfile docker/
           docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:nonprod-latest
 
+      # Trivy scans for vulnerabilities in our container image
+      # NonProd environment: we scan but don't block on vulnerabilities (soft_fail)
       - name: Run Trivy Security Scan
         uses: aquasecurity/trivy-action@0.28.0
         with:
@@ -212,38 +209,80 @@ jobs:
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:nonprod-latest
 
+  trigger-argocd-sync:
+    name: Trigger ArgoCD Deployment
+    needs: build-and-scan-image
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout Deployment Repo
+        uses: actions/checkout@v4.1.1
+        with:
+          repository: deadki0001/aws-community-labs
+          token: ${{ secrets.GH_PAT }}  # Personal Access Token for pushing to deployment repo
+          path: deployment-repo
+
+      - name: Update Image Tag
+        working-directory: deployment-repo
+        run: |
+          # Update the image tag in the deployment manifest
+          cd deployments/nonprod/demo-app
+          
+          # Option 1: Update kustomization.yaml
+          yq eval '.images[0].newTag = "${{ github.sha }}"' -i kustomization.yaml
+          
+          # Option 2: Or update deployment.yaml directly
+          # yq eval '.spec.template.spec.containers[0].image = "${{ steps.login-ecr.outputs.registry }}/demo-app-images:${{ github.sha }}"' -i deployment.yaml
+
+      - name: Commit and Push
+        working-directory: deployment-repo
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add deployments/nonprod/
+          git commit -m "chore: update nonprod image to ${{ github.sha }}"
+          git push origin main
+
+      - name: Wait for ArgoCD Sync
+        run: |
+          echo "✅ Image tag updated in deployment repo"
+          echo "🔄 ArgoCD will automatically detect and deploy the change"
+          echo "🌐 Check ArgoCD UI for deployment status"
+
   notify-discord:
     name: Discord Notification
     runs-on: ubuntu-22.04
     if: always()
-    needs: [security-scan-iac, terraform-plan, terraform-apply, build-and-scan-image]
+    needs: [security-scan-iac, terraform-plan, terraform-apply, build-and-scan-image, trigger-argocd-sync]
     steps:
       - name: Send Status to Discord
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          SEC_STATUS: ${{ needs.security-scan-iac.result == 'success' && '✅ Passed' || '❌ Failed' }}
-          PLAN_STATUS: ${{ needs.terraform-plan.result == 'success' && '✅ Passed' || '❌ Failed' }}
-          APPLY_STATUS: ${{ needs.terraform-apply.result == 'success' && '✅ Applied' || '❌ Failed' }}
-          BUILD_STATUS: ${{ needs.build-and-scan-image.result == 'success' && '✅ Passed' || '❌ Failed' }}
-          OVERALL_STATUS: ${{ (needs.security-scan-iac.result == 'failure' || needs.terraform-plan.result == 'failure' || needs.terraform-apply.result == 'failure' || needs.build-and-scan-image.result == 'failure') && '❌ FAILED' || '✅ SUCCESS' }}
-          OVERALL_COLOR: ${{ (needs.security-scan-iac.result == 'failure' || needs.terraform-plan.result == 'failure' || needs.terraform-apply.result == 'failure' || needs.build-and-scan-image.result == 'failure') && '15158332' || '3066993' }}
         run: |
-          cat > payload.json <<JSON
-          {
+          if [ "${{ needs.security-scan-iac.result }}" == "failure" ] || \
+             [ "${{ needs.terraform-plan.result }}" == "failure" ] || \
+             [ "${{ needs.terraform-apply.result }}" == "failure" ] || \
+             [ "${{ needs.build-and-scan-image.result }}" == "failure" ] || \
+             [ "${{ needs.trigger-argocd-sync.result }}" == "failure" ]; then
+            STATUS="❌ FAILED"
+            COLOR="15158332"
+          else
+            STATUS="✅ SUCCESS"
+            COLOR="3066993"
+          fi
+
+          curl -X POST "$DISCORD_WEBHOOK" -H "Content-Type: application/json" -d '{
             "embeds": [{
               "title": "🔧 NonProd Deployment",
-              "description": "**Status:** ${OVERALL_STATUS}\n**Branch:** `${{ github.ref_name }}`\n**By:** ${{ github.actor }}",
-              "color": ${OVERALL_COLOR},
+              "description": "**Status:** '"$STATUS"'\n**Branch:** `${{ github.ref_name }}`\n**By:** ${{ github.actor }}",
+              "color": '"$COLOR"',
               "fields": [
-                {"name": "🔒 Security", "value": "${SEC_STATUS}", "inline": true},
-                {"name": "📋 Plan", "value": "${PLAN_STATUS}", "inline": true},
-                {"name": "🚀 Apply", "value": "${APPLY_STATUS}", "inline": true},
-                {"name": "🐳 Build", "value": "${BUILD_STATUS}", "inline": true},
+                {"name": "🔒 Security", "value": "${{ needs.security-scan-iac.result == '\''success'\'' && '\''✅ Passed'\'' || '\''❌ Failed'\'' }}", "inline": true},
+                {"name": "📋 Plan", "value": "${{ needs.terraform-plan.result == '\''success'\'' && '\''✅ Passed'\'' || '\''❌ Failed'\'' }}", "inline": true},
+                {"name": "🚀 Apply", "value": "${{ needs.terraform-apply.result == '\''success'\'' && '\''✅ Applied'\'' || '\''❌ Failed'\'' }}", "inline": true},
+                {"name": "🐳 Build", "value": "${{ needs.build-and-scan-image.result == '\''success'\'' && '\''✅ Passed'\'' || '\''❌ Failed'\'' }}", "inline": true},
+                {"name": "🎯 ArgoCD", "value": "${{ needs.trigger-argocd-sync.result == '\''success'\'' && '\''✅ Synced'\'' || '\''❌ Failed'\'' }}", "inline": true},
                 {"name": "🔗 Details", "value": "[View Run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})", "inline": false}
               ],
-              "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"
+              "timestamp": "'"$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"'"
             }]
-          }
-          JSON
-
-          curl -sS -X POST "$DISCORD_WEBHOOK" -H "Content-Type: application/json" --data @payload.json
+          }'
