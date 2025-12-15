@@ -1,272 +1,440 @@
-// Terraform code referenced from https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources
-// For a complete list of configuration items you are welcome to visit the above link.
-// For a more ind depth read on VPC's, I have included a readme.txt with the AWS Whitepaper which will provide you with any additional context.
+# ============================================================================
+# Amazon EKS (Elastic Kubernetes Service) Configuration
+# ============================================================================
+# This file contains all EKS-related resources:
+# - EKS Cluster
+# - EKS Node Groups
+# - IAM Roles and Policies for EKS
+# - Security Groups for EKS
+# ============================================================================
 
-# checkov:skip=CKV2_AWS_11:VPC flow logging disabled for demo environment to reduce costs
-# checkov:skip=CKV2_AWS_12:Default security group restrictions handled separately
-resource "aws_vpc" "demo_application_vpc" {
-  cidr_block = "10.0.0.0/16" // = 65, 536 usable addresses within this given network
+# Terraform documentation: https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/eks_cluster
+# AWS EKS documentation: https://docs.aws.amazon.com/eks/
+
+# -----------------------------------------------------------------------------
+# EKS Cluster IAM Role
+# -----------------------------------------------------------------------------
+# This IAM role allows the EKS service to manage resources on your behalf
+# The EKS service needs permission to create load balancers, modify network interfaces, etc.
+
+resource "aws_iam_role" "eks_cluster_role" {
+  name = "${var.environment}-demo-eks-cluster-role"
+
+  # Trust policy: allows the EKS service to assume this role
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Principal = {
+        Service = "eks.amazonaws.com"
+      }
+      Action = "sts:AssumeRole"
+    }]
+  })
 
   tags = {
-    Name       = "demo-application-vpc"
-    Managed_by = "Terraform"
+    Name        = "${var.environment}-eks-cluster-role"
+    Environment = var.environment
+    ManagedBy   = "Terraform"
   }
 }
 
-// Restrict the default security group - fixes CKV2_AWS_12
-resource "aws_default_security_group" "default" {
-  vpc_id = aws_vpc.demo_application_vpc.id
+# Attach the AWS-managed EKS Cluster Policy
+# This policy provides the necessary permissions for EKS to manage your cluster
+resource "aws_iam_role_policy_attachment" "eks_cluster_policy" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
+  role       = aws_iam_role.eks_cluster_role.name
+}
 
-  # No ingress or egress rules - all traffic blocked
+# Attach VPC Resource Controller policy
+# This allows the EKS cluster to manage network interfaces and security groups
+resource "aws_iam_role_policy_attachment" "eks_vpc_resource_controller" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSVPCResourceController"
+  role       = aws_iam_role.eks_cluster_role.name
+}
+
+# -----------------------------------------------------------------------------
+# EKS Cluster Security Group
+# -----------------------------------------------------------------------------
+# Additional security group for the EKS cluster control plane
+# The EKS service automatically creates a security group, but we create an additional one
+# for more fine-grained control if needed
+
+resource "aws_security_group" "eks_cluster_sg" {
+  name        = "${var.environment}-eks-cluster-sg"
+  description = "Security group for EKS cluster control plane"
+  vpc_id      = aws_vpc.demo_application_vpc.id
+
+  # Allow all outbound traffic
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "Allow all outbound traffic"
+  }
+
   tags = {
-    Name = "demo-vpc-default-sg-restricted"
+    Name        = "${var.environment}-eks-cluster-sg"
+    Environment = var.environment
+    ManagedBy   = "Terraform"
   }
 }
 
-// Optional: Enable VPC Flow Logs (uncomment for production)
-// This addresses CKV2_AWS_11 but adds cost, so keeping it commented for demo
-# resource "aws_flow_log" "demo_vpc_flow_log" {
-#   vpc_id          = aws_vpc.demo_application_vpc.id
-#   traffic_type    = "ALL"
-#   iam_role_arn    = aws_iam_role.vpc_flow_log_role.arn
-#   log_destination = aws_cloudwatch_log_group.vpc_flow_log.arn
-# }
+# Allow worker nodes to communicate with cluster API server
+resource "aws_security_group_rule" "cluster_ingress_workstation_https" {
+  description              = "Allow workstation to communicate with the cluster API Server"
+  type                     = "ingress"
+  from_port                = 443
+  to_port                  = 443
+  protocol                 = "tcp"
+  security_group_id        = aws_security_group.eks_cluster_sg.id
+  source_security_group_id = aws_security_group.eks_nodes_sg.id
+}
 
-# resource "aws_cloudwatch_log_group" "vpc_flow_log" {
-#   name              = "/aws/vpc/demo-application-vpc"
-#   retention_in_days = 7
-# }
+# -----------------------------------------------------------------------------
+# EKS Cluster
+# -----------------------------------------------------------------------------
+# The EKS cluster is the control plane for Kubernetes
+# It manages the Kubernetes API server, scheduler, and other control plane components
+# Worker nodes (managed by node groups) connect to this cluster
 
-# resource "aws_iam_role" "vpc_flow_log_role" {
-#   name = "vpc-flow-log-role"
-#   assume_role_policy = jsonencode({
-#     Version = "2012-10-17"
-#     Statement = [{
-#       Effect = "Allow"
-#       Principal = {
-#         Service = "vpc-flow-logs.amazonaws.com"
-#       }
-#       Action = "sts:AssumeRole"
-#     }]
-#   })
-# }
+resource "aws_eks_cluster" "demo" {
+  name     = "${var.environment}-demo-eks-cluster"
+  role_arn = aws_iam_role.eks_cluster_role.arn
+  version  = "1.28" # Kubernetes version - update as needed
 
-# resource "aws_iam_role_policy" "vpc_flow_log_policy" {
-#   role = aws_iam_role.vpc_flow_log_role.id
-#   policy = jsonencode({
-#     Version = "2012-10-17"
-#     Statement = [{
-#       Effect = "Allow"
-#       Action = [
-#         "logs:CreateLogGroup",
-#         "logs:CreateLogStream",
-#         "logs:PutLogEvents",
-#         "logs:DescribeLogGroups",
-#         "logs:DescribeLogStreams"
-#       ]
-#       Resource = "*"
-#     }]
-#   })
-# }
+  # VPC configuration for the cluster
+  vpc_config {
+    # Deploy control plane across private subnets for security
+    subnet_ids = [
+      aws_subnet.demo_private_subnet_1.id,
+      aws_subnet.demo_private_subnet_2.id
+    ]
 
-# resource "aws_iam_role_policy_attachment" "eks_worker_node_policy" {
-#   policy_arn = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
-#   role       = aws_iam_role.eks_nodes.name
-# }
+    # Allow private access from within VPC
+    endpoint_private_access = true
 
-# resource "aws_iam_role_policy_attachment" "eks_cni_policy" {
-#   policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
-#   role       = aws_iam_role.eks_nodes.name
-# }
+    # Allow public access to the cluster endpoint
+    # Set to false in production if you only want VPC-internal access
+    endpoint_public_access = true
 
-# resource "aws_iam_role_policy_attachment" "eks_container_registry" {
-#   policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
-#   role       = aws_iam_role.eks_nodes.name
-# }
+    # Additional security groups for the cluster
+    security_group_ids = [aws_security_group.eks_cluster_sg.id]
+  }
 
-# # EKS Node Group
-# resource "aws_eks_node_group" "demo" {
-#   cluster_name    = aws_eks_cluster.demo.name
-#   node_group_name = "demo-node-group"
-#   node_role_arn   = aws_iam_role.eks_nodes.arn
-#   subnet_ids      = [
-#     aws_subnet.demo_private_subnet_1.id,
-#     aws_subnet.demo_private_subnet_2.id
-#   ]
+  # Enable control plane logging for troubleshooting and auditing
+  # These logs are sent to CloudWatch Logs
+  enabled_cluster_log_types = [
+    "api",
+    "audit",
+    "authenticator",
+    "controllerManager",
+    "scheduler"
+  ]
 
-#   scaling_config {
-#     desired_size = 2
-#     max_size     = 3
-#     min_size     = 1
-#   }
+  # Wait for IAM role policies to be attached before creating the cluster
+  depends_on = [
+    aws_iam_role_policy_attachment.eks_cluster_policy,
+    aws_iam_role_policy_attachment.eks_vpc_resource_controller
+  ]
 
-#   instance_types = ["t3.small"]
+  tags = {
+    Name        = "${var.environment}-demo-eks-cluster"
+    Environment = var.environment
+    ManagedBy   = "Terraform"
+  }
+}
 
-#   update_config {
-#     max_unavailable = 1
-#   }
+# -----------------------------------------------------------------------------
+# CloudWatch Log Group for EKS Cluster Logs
+# -----------------------------------------------------------------------------
+# Store EKS control plane logs in CloudWatch for monitoring and troubleshooting
 
-#   depends_on = [
-#     aws_iam_role_policy_attachment.eks_worker_node_policy,
-#     aws_iam_role_policy_attachment.eks_cni_policy,
-#     aws_iam_role_policy_attachment.eks_container_registry,
-#   ]
+resource "aws_cloudwatch_log_group" "eks_cluster" {
+  name              = "/aws/eks/${var.environment}-demo-eks-cluster/cluster"
+  retention_in_days = 7 # Adjust retention as needed (7, 14, 30, 60, 90, etc.)
 
-#   tags = {
-#     Name = "demo-eks-nodes"
-#   }
-# }
+  tags = {
+    Name        = "${var.environment}-eks-cluster-logs"
+    Environment = var.environment
+    ManagedBy   = "Terraform"
+  }
+}
 
-# # OIDC Provider for IRSA (IAM Roles for Service Accounts)
-# data "tls_certificate" "eks" {
-#   url = aws_eks_cluster.demo.identity[0].oidc[0].issuer
-# }
+# -----------------------------------------------------------------------------
+# EKS Node Group IAM Role
+# -----------------------------------------------------------------------------
+# This IAM role is assumed by the EC2 instances that serve as Kubernetes worker nodes
+# These nodes run your containerized applications
 
-# resource "aws_iam_openid_connect_provider" "eks" {
-#   client_id_list  = ["sts.amazonaws.com"]
-#   thumbprint_list = [data.tls_certificate.eks.certificates[0].sha1_fingerprint]
-#   url             = aws_eks_cluster.demo.identity[0].oidc[0].issuer
+resource "aws_iam_role" "eks_node_group_role" {
+  name = "${var.environment}-demo-eks-node-group-role"
 
-#   tags = {
-#     Name = "eks-oidc-provider"
-#   }
-# }
+  # Trust policy: allows EC2 service to assume this role
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Principal = {
+        Service = "ec2.amazonaws.com"
+      }
+      Action = "sts:AssumeRole"
+    }]
+  })
 
-# # Output for kubectl config
-# output "eks_cluster_endpoint" {
-#   value = aws_eks_cluster.demo.endpoint
-# }
+  tags = {
+    Name        = "${var.environment}-eks-node-group-role"
+    Environment = var.environment
+    ManagedBy   = "Terraform"
+  }
+}
 
-# output "eks_cluster_name" {
-#   value = aws_eks_cluster.demo.name
-# }
+# Attach required AWS-managed policies for EKS worker nodes
+# These policies allow the nodes to:
+# - Communicate with the EKS cluster
+# - Pull container images from ECR
+# - Manage network interfaces and IP addresses
+resource "aws_iam_role_policy_attachment" "eks_node_group_policies" {
+  for_each = toset([
+    "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy",          # Core EKS worker node permissions
+    "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy",               # Networking (CNI) permissions
+    "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly", # Pull images from ECR
+  ])
 
-# output "configure_kubectl" {
-#   value = "aws eks update-kubeconfig --region us-east-1 --name ${aws_eks_cluster.demo.name}"
-# }
+  policy_arn = each.value
+  role       = aws_iam_role.eks_node_group_role.name
+}
+
+# Additional policy for CloudWatch logging from nodes
+resource "aws_iam_role_policy_attachment" "eks_node_cloudwatch_policy" {
+  policy_arn = "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy"
+  role       = aws_iam_role.eks_node_group_role.name
+}
+
+# -----------------------------------------------------------------------------
+# EKS Node Group Security Group
+# -----------------------------------------------------------------------------
+# Security group for the worker nodes
+# Controls inbound and outbound traffic for the EC2 instances running your pods
+
+resource "aws_security_group" "eks_nodes_sg" {
+  name        = "${var.environment}-eks-nodes-sg"
+  description = "Security group for EKS worker nodes"
+  vpc_id      = aws_vpc.demo_application_vpc.id
+
+  # Allow all outbound traffic
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "Allow all outbound traffic"
+  }
+
+  tags = {
+    Name                                                        = "${var.environment}-eks-nodes-sg"
+    Environment                                                 = var.environment
+    ManagedBy                                                   = "Terraform"
+    "kubernetes.io/cluster/${var.environment}-demo-eks-cluster" = "owned"
+  }
+}
+
+# Allow nodes to communicate with each other
+resource "aws_security_group_rule" "nodes_internal" {
+  description              = "Allow nodes to communicate with each other"
+  type                     = "ingress"
+  from_port                = 0
+  to_port                  = 65535
+  protocol                 = "-1"
+  security_group_id        = aws_security_group.eks_nodes_sg.id
+  source_security_group_id = aws_security_group.eks_nodes_sg.id
+}
+
+# Allow nodes to receive communication from the cluster control plane
+resource "aws_security_group_rule" "nodes_cluster_inbound" {
+  description              = "Allow worker Kubelets and pods to receive communication from the cluster control plane"
+  type                     = "ingress"
+  from_port                = 1025
+  to_port                  = 65535
+  protocol                 = "tcp"
+  security_group_id        = aws_security_group.eks_nodes_sg.id
+  source_security_group_id = aws_security_group.eks_cluster_sg.id
+}
+
+# Allow pods to communicate with the cluster API server
+resource "aws_security_group_rule" "cluster_api_to_nodes" {
+  description              = "Allow pods to communicate with the cluster API Server"
+  type                     = "ingress"
+  from_port                = 443
+  to_port                  = 443
+  protocol                 = "tcp"
+  security_group_id        = aws_security_group.eks_nodes_sg.id
+  source_security_group_id = aws_security_group.eks_cluster_sg.id
+}
+
+# -----------------------------------------------------------------------------
+# EKS Node Group
+# -----------------------------------------------------------------------------
+# Node groups are groups of EC2 instances that run your Kubernetes workloads
+# EKS automatically handles:
+# - Provisioning EC2 instances
+# - Joining them to the cluster
+# - Updating them (when you change the configuration)
+# - Scaling them (based on your min/max/desired settings)
+
+resource "aws_eks_node_group" "demo" {
+  cluster_name    = aws_eks_cluster.demo.name
+  node_group_name = "${var.environment}-demo-node-group"
+  node_role_arn   = aws_iam_role.eks_node_group_role.arn
+
+  # Deploy worker nodes in private subnets
+  # This keeps them off the public internet while allowing outbound connections via NAT
+  subnet_ids = [
+    aws_subnet.demo_private_subnet_1.id,
+    aws_subnet.demo_private_subnet_2.id
+  ]
+
+  # Scaling configuration
+  # - desired_size: How many nodes to run normally
+  # - max_size: Maximum nodes during scale-up events
+  # - min_size: Minimum nodes (don't go below this)
+  scaling_config {
+    desired_size = var.environment == "prod" ? 3 : 2 # More nodes in production
+    max_size     = var.environment == "prod" ? 5 : 3
+    min_size     = var.environment == "prod" ? 2 : 1
+  }
+
+  # Update configuration
+  # This determines how nodes are updated when you make changes
+  update_config {
+    max_unavailable = 1 # Only update one node at a time to maintain availability
+  }
+
+  # EC2 instance configuration
+  instance_types = ["t3.medium"] # 2 vCPUs, 4 GiB RAM - adjust based on workload
+  capacity_type  = "ON_DEMAND"   # Use ON_DEMAND for predictable costs, or SPOT for savings
+
+  # Disk configuration for worker nodes
+  disk_size = 20 # GB - size of the EBS volume attached to each node
+
+  # Configure how Kubernetes updates node labels and taints
+  # This ensures pods are properly drained before nodes are terminated
+  force_update_version = false
+
+  # Labels to apply to all nodes in this node group
+  # You can use these labels in pod scheduling (nodeSelector, affinity)
+  labels = {
+    Environment = var.environment
+    NodeGroup   = "demo-node-group"
+  }
+
+  # Wait for IAM role policies to propagate before creating nodes
+  depends_on = [
+    aws_iam_role_policy_attachment.eks_node_group_policies,
+    aws_eks_cluster.demo
+  ]
+
+  tags = {
+    Name        = "${var.environment}-demo-node-group"
+    Environment = var.environment
+    ManagedBy   = "Terraform"
+  }
+
+  # Lifecycle configuration
+  # Ignore changes to desired_size if you plan to use cluster autoscaler
+  lifecycle {
+    ignore_changes = [scaling_config[0].desired_size]
+  }
+}
+
+# -----------------------------------------------------------------------------
+# OIDC Provider for EKS
+# -----------------------------------------------------------------------------
+# OIDC provider allows Kubernetes service accounts to assume IAM roles
+# This is required for:
+# - AWS Load Balancer Controller
+# - External DNS
+# - Cluster Autoscaler
+# - Any other k8s services that need AWS permissions
+
+data "tls_certificate" "eks" {
+  url = aws_eks_cluster.demo.identity[0].oidc[0].issuer
+}
+
+resource "aws_iam_openid_connect_provider" "eks" {
+  client_id_list  = ["sts.amazonaws.com"]
+  thumbprint_list = [data.tls_certificate.eks.certificates[0].sha1_fingerprint]
+  url             = aws_eks_cluster.demo.identity[0].oidc[0].issuer
+
+  tags = {
+    Name        = "${var.environment}-eks-oidc-provider"
+    Environment = var.environment
+    ManagedBy   = "Terraform"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# Outputs
+# -----------------------------------------------------------------------------
+# These outputs can be used by other Terraform configurations
+# or to configure kubectl access to the cluster
+
+output "eks_cluster_id" {
+  description = "The name/id of the EKS cluster"
+  value       = aws_eks_cluster.demo.id
+}
+
+output "eks_cluster_endpoint" {
+  description = "Endpoint for EKS control plane"
+  value       = aws_eks_cluster.demo.endpoint
+}
+
+output "eks_cluster_security_group_id" {
+  description = "Security group ID attached to the EKS cluster"
+  value       = aws_security_group.eks_cluster_sg.id
+}
+
+output "eks_cluster_arn" {
+  description = "The Amazon Resource Name (ARN) of the cluster"
+  value       = aws_eks_cluster.demo.arn
+}
+
+output "eks_cluster_certificate_authority_data" {
+  description = "Base64 encoded certificate data required to communicate with the cluster"
+  value       = aws_eks_cluster.demo.certificate_authority[0].data
+  sensitive   = true
+}
+
+output "eks_cluster_oidc_issuer_url" {
+  description = "The URL on the EKS cluster OIDC Issuer"
+  value       = try(aws_eks_cluster.demo.identity[0].oidc[0].issuer, null)
+}
+
+output "eks_node_group_id" {
+  description = "EKS node group ID"
+  value       = aws_eks_node_group.demo.id
+}
+
+output "eks_node_group_status" {
+  description = "Status of the EKS node group"
+  value       = aws_eks_node_group.demo.status
+}
+
+# -----------------------------------------------------------------------------
+# Helpful Commands (Comments)
+# -----------------------------------------------------------------------------
+# After deploying the EKS cluster, configure kubectl access:
 #
-
-// Think of an Internet gateway like your Router - giving Internet Access to Your VPC
-// A Internet Gateway can be attached to the VPC, this enables internet access.
-// Much like before to create the resource, the boolean value must be set to true.
-
-resource "aws_internet_gateway" "internet_gateway" {
-  vpc_id = aws_vpc.demo_application_vpc.id
-
-  tags = {
-    Name = "demo-igw"
-  }
-}
-
-// A public subnet will always have direct access to the internet
-// Subnets are associated to a specific route, for an example a route out to the internet or local connectivity.
-// These routes are managed by what we refer to as a Route Table.
-
-resource "aws_subnet" "demo_public_subnet_1" {
-  vpc_id            = aws_vpc.demo_application_vpc.id
-  availability_zone = "us-east-2a"
-  cidr_block        = "10.0.2.0/24"
-  tags = {
-    Name = "demo_public_subnet_1"
-  }
-}
-
-// Availability zones are similar to Data Centers, we haouse our applications
-// further availibility zones can be added to the above list using the following expressions ["us-east-2b", "us-east-2c"]
-// In this demo we will only be deploying one availability zone. 
-
-resource "aws_subnet" "demo_private_subnet_1" {
-  vpc_id            = aws_vpc.demo_application_vpc.id
-  availability_zone = "us-east-2a"
-  cidr_block        = "10.0.1.0/24"
-
-  tags = {
-    Name = "demo_private_subnet_1"
-  }
-}
-
-resource "aws_subnet" "demo_private_subnet_2" {
-  vpc_id            = aws_vpc.demo_application_vpc.id
-  availability_zone = "us-east-2b"
-  cidr_block        = "10.0.3.0/24"
-
-  tags = {
-    Name = "demo_private_subnet_2"
-  }
-}
-
-// Private subnets are used to communicate locally within a given network, they have various use cases.
-// A subnet characteristics is simply defined on where it has direct access to the internet using an Internet Gateway.
-// More on Internet Gateways below
-
-resource "aws_eip" "nat_gw_eip" {
-  domain = "vpc"
-
-  tags = {
-    Name = "eip-reserved-for-nat-gw"
-  }
-}
-
-// Our NAT Gateway will ensure that we can provide internet access to our apps or Databases if need be.
-// The NAT Gateway is a fully managed service by AWS. 
-
-resource "aws_nat_gateway" "demo_nat_gw" {
-  allocation_id = aws_eip.nat_gw_eip.id
-  subnet_id     = aws_subnet.demo_public_subnet_1.id
-
-  tags = {
-    Name = "demo-nat-gateway"
-  }
-}
-
-// As mentioned above - Route Tables are used to direct network traffic around your VPC. 
-// This is the fun part - for example we can now create a Public Route Table (This would be for Public Connectivity - In terms of the Internet)
-// We can also create the Private Route Table in terms of Local Network Traffic and not forgetting our NAT gateway!
-
-resource "aws_route_table" "demo_public_route_table" {
-  vpc_id = aws_vpc.demo_application_vpc.id
-
-  route {
-    cidr_block = "0.0.0.0/0"                              // this is where we declare what CIDR Range traverse in the route table
-    gateway_id = aws_internet_gateway.internet_gateway.id // This is how we actually declare the public route table and provide direct internet access to our subnet.
-  }
-
-  tags = {
-    Name = "demo-public-route-table"
-  }
-}
-
-resource "aws_route_table" "demo_private_route_table" {
-  vpc_id = aws_vpc.demo_application_vpc.id
-
-  route {
-    cidr_block     = "0.0.0.0/0"                    // This is where we declare what CIDR Range can traverse in the route table
-    nat_gateway_id = aws_nat_gateway.demo_nat_gw.id // Take note of the difference, for the Private Route Table, we adding the Managed NAT Gateway
-  }                                                 // Should you see this in a given configuration you know this has to be a private subnet!
-
-  tags = {
-    Name = "demo-private-route-table"
-  }
-}
-
-// Ok Perfect we have alot of the building blocks together to form a fully functional VPC.
-// Now that we have created the Route Tables, we must actually ASSOCIATE our newly created subnets to each respective Route Table.
-// We achive this using the Terrform Resource called aws_route_table_association
-
-resource "aws_route_table_association" "demo_public_subnet_association" {
-  subnet_id      = aws_subnet.demo_public_subnet_1.id
-  route_table_id = aws_route_table.demo_public_route_table.id
-}
-
-// Just like that we associated the above public subnet to the public route-table - easy peasy japanesy :) 
-// Lastly we are going to associate our private subnet to our private route table
-
-resource "aws_route_table_association" "demo_private_subnet_association" {
-  subnet_id      = aws_subnet.demo_private_subnet_1.id
-  route_table_id = aws_route_table.demo_private_route_table.id
-}
-
-resource "aws_route_table_association" "demo_private_subnet_2_association" {
-  subnet_id      = aws_subnet.demo_private_subnet_2.id
-  route_table_id = aws_route_table.demo_private_route_table.id
-}
+# aws eks update-kubeconfig --region us-east-2 --name demo-eks-cluster
+#
+# Verify cluster access:
+# kubectl get nodes
+# kubectl get pods -A
+#
+# Deploy an application:
+# kubectl create deployment nginx --image=nginx
+# kubectl expose deployment nginx --port=80 --type=LoadBalancer
+#
+# View logs:
+# kubectl logs -f deployment/nginx
