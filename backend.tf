@@ -5,8 +5,8 @@
 
 terraform {
   backend "s3" {
-    bucket         = "deadki-terraform-nonprod-state-bucket"
-    key            = "terraform-nonprod.tfstate"
+    bucket         = "deadki-terraform-staging-state-bucket"
+    key            = "terraform-staging.tfstate"
     region         = "us-east-2"
     encrypt        = true
     dynamodb_table = "terraform-state-lock"
