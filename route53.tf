@@ -34,7 +34,7 @@
 #     staging = "staging"
 #     nonprod = "nonprod"
 #   }
-  
+
 #   # Full domain for this environment
 #   environment_domain = local.subdomain_prefixes[var.environment] == "" ? var.domain_name : "${local.subdomain_prefixes[var.environment]}.${var.domain_name}"
 # }
@@ -129,7 +129,7 @@
 #   count    = var.environment != "prod" ? 1 : 0
 #   domain   = var.domain_name
 #   statuses = ["ISSUED"]
-  
+
 #   # If your certificate is in us-east-1 but you're deploying in another region,
 #   # you'll need to create a regional certificate
 #   most_recent = true

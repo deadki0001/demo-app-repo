@@ -150,7 +150,7 @@ resource "aws_route_table" "demo_public_route_table" {
   vpc_id = aws_vpc.demo_application_vpc.id
 
   route {
-    cidr_block = "0.0.0.0/0"                            // this is where we declare what CIDR Range traverse in the route table
+    cidr_block = "0.0.0.0/0"                              // this is where we declare what CIDR Range traverse in the route table
     gateway_id = aws_internet_gateway.internet_gateway.id // This is how we actually declare the public route table and provide direct internet access to our subnet.
   }
 
@@ -163,7 +163,7 @@ resource "aws_route_table" "demo_private_route_table" {
   vpc_id = aws_vpc.demo_application_vpc.id
 
   route {
-    cidr_block     = "0.0.0.0/0"                 // This is where we declare what CIDR Range can traverse in the route table
+    cidr_block     = "0.0.0.0/0"                    // This is where we declare what CIDR Range can traverse in the route table
     nat_gateway_id = aws_nat_gateway.demo_nat_gw.id // Take note of the difference, for the Private Route Table, we adding the Managed NAT Gateway
   }                                                 // Should you see this in a given configuration you know this has to be a private subnet!
 

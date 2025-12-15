@@ -102,7 +102,7 @@
 #     }
 #     spec = {
 #       project = "default"
-      
+
 #       # Source: Your deployment manifests repo
 #       source = {
 #         repoURL        = "https://github.com/deadki0001/aws-community-labs"
