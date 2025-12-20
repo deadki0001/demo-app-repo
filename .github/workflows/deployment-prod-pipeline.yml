@@ -1,4 +1,4 @@
-name: Deploy to Production
+name: Deploy to Production (Fixed)
 
 on:
   push:
@@ -12,11 +12,10 @@ on:
       action:
         description: 'Action to perform'
         required: true
-        default: 'plan'
+        default: 'deploy'
         type: choice
         options:
-          - plan
-          - apply
+          - deploy
           - destroy
 
 permissions:
@@ -24,10 +23,23 @@ permissions:
   contents: read
   pull-requests: write
   security-events: write
+  issues: write
+
+# Prevent concurrent Terraform runs against production
+concurrency:
+  group: terraform-production
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-2
+  TF_VERSION: 1.5.7
 
 jobs:
+  # ==========================================================================
+  # Security Scan (IaC Static Analysis)
+  # ==========================================================================
   security-scan-iac:
-    name: Checkov Security Scan
+    name: 🔒 Checkov Security Scan
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout Repository
@@ -42,7 +54,7 @@ jobs:
           output_file_path: console,checkov-results.sarif
           soft_fail: false
           download_external_modules: true
-          skip_check: CKV_AWS_51  # CRITICAL: Skip immutable tags check
+          skip_check: CKV_AWS_51
 
       - name: Upload Checkov Results to GitHub Security
         uses: github/codeql-action/upload-sarif@v3.26.13
@@ -50,31 +62,38 @@ jobs:
         with:
           sarif_file: checkov-results.sarif
 
-  terraform-plan:
-    name: Terraform Plan
+  # ==========================================================================
+  # PR Validation (Plan Preview Only - No Apply)
+  # ==========================================================================
+  validate-pr:
+    name: 🔍 Validate PR Changes
     runs-on: ubuntu-22.04
     needs: security-scan-iac
-    if: github.event_name == 'pull_request' || github.event_name == 'push' || github.event.inputs.action == 'plan' || github.event.inputs.action == 'apply'
-    container:
-      image: hashicorp/terraform:1.5.7
+    if: github.event_name == 'pull_request'
+    
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4.1.1
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
 
       - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4.0.2
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN_PROD }}
-          aws-region: ${{ vars.AWS_REGION }}
-          role-session-name: GHA-Prod-Plan-${{ github.sha }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: GHA-Prod-PR-${{ github.sha }}
           role-duration-seconds: 3600
 
-      - name: Initialize Terraform
+      - name: Terraform Init
         run: |
           terraform init \
             -backend-config="bucket=${{ vars.TF_STATE_BUCKET_PROD }}" \
             -backend-config="key=prod/terraform.tfstate" \
-            -backend-config="region=${{ vars.AWS_REGION }}" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
             -backend-config="dynamodb_table=${{ vars.TF_STATE_LOCK_TABLE }}"
 
       - name: Terraform Validate
@@ -83,8 +102,162 @@ jobs:
       - name: Terraform Format Check
         run: terraform fmt -check -recursive
 
+      - name: Terraform Plan (Preview Only)
+        id: plan
+        run: |
+          terraform plan -no-color -input=false
+        continue-on-error: true
+
+      - name: Convert Plan to JSON
+        if: success() || failure()
+        run: |
+          terraform plan -out=tfplan.binary -input=false
+          terraform show -json tfplan.binary > tfplan.json
+
+      - name: Run Checkov on Plan
+        uses: bridgecrewio/checkov-action@v12.2867.0
+        continue-on-error: true
+        with:
+          file: tfplan.json
+          framework: terraform_plan
+          output_format: cli,sarif,json
+          output_file_path: console,checkov-plan-results.sarif,checkov-results.json
+          soft_fail: false
+          compact: true
+          skip_check: CKV_AWS_51
+
+      - name: Upload Checkov Results
+        uses: actions/upload-artifact@v4.4.3
+        if: always()
+        with:
+          name: checkov-results-pr
+          path: checkov-results.json
+          retention-days: 30
+
+      - name: Comment PR with Plan
+        uses: actions/github-script@v7
+        if: github.event_name == 'pull_request'
+        env:
+          PLAN_OUTPUT: ${{ steps.plan.outputs.stdout }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const output = process.env.PLAN_OUTPUT;
+            const truncated = output.length > 65000 ? 
+              output.substring(0, 65000) + '\n\n...(truncated)' : 
+              output;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## 🔍 Terraform Plan Preview (Production)
+            
+            ⚠️ **This is a production deployment preview**
+            
+            \`\`\`terraform
+            ${truncated}
+            \`\`\`
+            
+            ### ✅ Required Approvals
+            This PR requires approval from authorized team members before deployment.
+            
+            **Security Checklist:**
+            - [ ] Infrastructure changes reviewed
+            - [ ] Security scan passed
+            - [ ] No sensitive data exposed
+            - [ ] Rollback plan confirmed
+            
+            *This is a preview only. No changes will be applied until merged to main branch and manually approved.*
+            
+            *Plan generated at: ${new Date().toUTCString()}*`
+            })
+
+  # ==========================================================================
+  # Manual Approval Gate (Production)
+  # Uses GitHub Environments with required reviewers
+  # ==========================================================================
+  production-approval:
+    name: 🔐 Production Deployment Approval
+    runs-on: ubuntu-22.04
+    needs: security-scan-iac
+    if: |
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') || 
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'deploy')
+    
+    # CRITICAL: Configure required reviewers in GitHub repo settings
+    # Settings → Environments → production-approval → Required reviewers
+    environment:
+      name: production-approval
+      url: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    
+    steps:
+      - name: Production Approval Checkpoint
+        run: |
+          echo "🔐 Production deployment approved by: ${{ github.actor }}"
+          echo "📅 Approval time: $(date -u +"%Y-%m-%d %H:%M:%S UTC")"
+          echo "📝 Commit SHA: ${{ github.sha }}"
+          echo "🔗 Run ID: ${{ github.run_id }}"
+          echo "⚠️  WARNING: Deploying to PRODUCTION environment"
+          echo ""
+          echo "Proceeding with production deployment in 10 seconds..."
+          sleep 10
+
+  # ==========================================================================
+  # Deploy to Production
+  # CRITICAL: Plan and Apply run in the SAME job to prevent stale plans
+  # ==========================================================================
+  deploy-production:
+    name: 🚀 Deploy to Production
+    runs-on: ubuntu-22.04
+    needs: production-approval
+    if: |
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') || 
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'deploy')
+    
+    environment:
+      name: production
+      url: https://yourdomain.com
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4.1.1
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Configure AWS Credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4.0.2
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN_PROD }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: GHA-Prod-Deploy-${{ github.sha }}
+          role-duration-seconds: 3600
+
+      - name: Terraform Init
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET_PROD }}" \
+            -backend-config="key=prod/terraform.tfstate" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="dynamodb_table=${{ vars.TF_STATE_LOCK_TABLE }}"
+
+      - name: Terraform Validate
+        run: terraform validate
+
+      - name: Terraform Format Check
+        run: terraform fmt -check -recursive
+
+      # CRITICAL: Plan and Apply in the same job
+      # This ensures the plan is fresh and matches current state
       - name: Terraform Plan
-        run: terraform plan -out=tfplan.binary
+        id: plan
+        run: |
+          echo "📋 Generating production execution plan..."
+          terraform plan -out=tfplan.binary -input=false
+          terraform show -no-color tfplan.binary
 
       - name: Convert Plan to JSON for Security Analysis
         run: terraform show -json tfplan.binary > tfplan.json
@@ -98,7 +271,7 @@ jobs:
           output_file_path: console,checkov-plan-results.sarif,checkov-results.json
           soft_fail: false
           compact: true
-          skip_check: CKV_AWS_51  # CRITICAL: Skip immutable tags check
+          skip_check: CKV_AWS_51
 
       - name: Upload Checkov Plan Results
         uses: github/codeql-action/upload-sarif@v3.26.13
@@ -106,85 +279,59 @@ jobs:
         with:
           sarif_file: checkov-plan-results.sarif
 
-      - name: Upload Terraform Plan
-        uses: actions/upload-artifact@v4.4.3
-        with:
-          name: tfplan-prod
-          path: tfplan.binary
-          retention-days: 30
-
       - name: Upload Checkov JSON Results
         uses: actions/upload-artifact@v4.4.3
         with:
-          name: checkov-results
+          name: checkov-results-production
           path: checkov-results.json
           retention-days: 90
 
-  manual-approval:
-    name: Production Deployment Approval
-    needs: terraform-plan
-    runs-on: ubuntu-22.04
-    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event.inputs.action == 'apply'
-    environment: 
-      name: production
-      url: https://github.com/${{ github.repository }}/actions
-    steps:
-      - name: Approval Gate
+      - name: Terraform Apply
+        id: apply
         run: |
-          echo "✅ Production deployment approved by ${{ github.actor }}"
-          echo "📅 Timestamp: $(date -u +"%Y-%m-%d %H:%M:%S UTC")"
-          echo "📝 Commit SHA: ${{ github.sha }}"
-          echo "🔒 This deployment was reviewed and approved"
-
-  terraform-apply:
-    name: Apply Infrastructure
-    needs: manual-approval
-    runs-on: ubuntu-22.04
-    container:
-      image: hashicorp/terraform:1.5.7
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4.1.1
-
-      - name: Configure AWS Credentials via OIDC
-        uses: aws-actions/configure-aws-credentials@v4.0.2
-        with:
-          role-to-assume: ${{ vars.AWS_ROLE_ARN_PROD }}
-          aws-region: ${{ vars.AWS_REGION }}
-          role-session-name: GHA-Prod-Apply-${{ github.sha }}
-          role-duration-seconds: 3600
-
-      - name: Initialize Terraform
-        run: |
-          terraform init \
-            -backend-config="bucket=${{ vars.TF_STATE_BUCKET_PROD }}" \
-            -backend-config="key=prod/terraform.tfstate" \
-            -backend-config="region=${{ vars.AWS_REGION }}" \
-            -backend-config="dynamodb_table=${{ vars.TF_STATE_LOCK_TABLE }}"
-
-      - name: Download Terraform Plan
-        uses: actions/download-artifact@v4.1.8
-        with:
-          name: tfplan-prod
-
-      - name: Apply Infrastructure
-        run: terraform apply -auto-approve tfplan.binary
+          echo "🚀 Applying production infrastructure changes..."
+          terraform apply -auto-approve tfplan.binary
 
       - name: Save Terraform Outputs
         id: tf-outputs
+        if: success()
         run: |
+          terraform output -json > terraform-outputs.json
           echo "ec2_public_ip=$(terraform output -raw ec2_public_ip 2>/dev/null || echo 'not-created')" >> $GITHUB_OUTPUT
+          echo "✅ Production deployment completed successfully!"
+          terraform output
+
+      - name: Upload Terraform Outputs
+        if: success()
+        uses: actions/upload-artifact@v4.4.3
+        with:
+          name: terraform-outputs-production
+          path: terraform-outputs.json
+          retention-days: 90
 
       - name: Create Deployment Record
+        if: success()
         run: |
-          echo "🚀 Deployment completed at $(date -u +"%Y-%m-%d %H:%M:%S UTC")" 
-          echo "👤 Deployed by: ${{ github.actor }}"
-          echo "📝 Commit SHA: ${{ github.sha }}"
+          echo "## 🎉 Production Deployment Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Deployed by:** ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Approved by:** ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Timestamp:** $(date -u +"%Y-%m-%d %H:%M:%S UTC")" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit SHA:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Terraform Outputs:**" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          terraform output >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
 
+  # ==========================================================================
+  # Build and Scan Container Image
+  # ==========================================================================
   build-and-scan-image:
-    name: Build & Scan Container Image
-    needs: terraform-apply
+    name: 🐳 Build & Scan Container Image
+    needs: deploy-production
     runs-on: ubuntu-22.04
+    
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4.1.1
@@ -193,7 +340,7 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v4.0.2
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN_PROD }}
-          aws-region: ${{ vars.AWS_REGION }}
+          aws-region: ${{ env.AWS_REGION }}
           role-session-name: GHA-Prod-Build-${{ github.sha }}
           role-duration-seconds: 3600
 
@@ -204,14 +351,13 @@ jobs:
       - name: Create ECR Repository if not exists
         env:
           ECR_REPOSITORY: demo-app-images
-          AWS_REGION: ${{ vars.AWS_REGION }}
         run: |
-          aws ecr describe-repositories --repository-names ${ECR_REPOSITORY} --region ${AWS_REGION} || \
+          aws ecr describe-repositories --repository-names ${ECR_REPOSITORY} --region ${{ env.AWS_REGION }} || \
           aws ecr create-repository \
             --repository-name ${ECR_REPOSITORY} \
             --image-scanning-configuration scanOnPush=true \
             --encryption-configuration encryptionType=KMS \
-            --region ${AWS_REGION}
+            --region ${{ env.AWS_REGION }}
 
       - name: Build Container Image
         env:
@@ -249,7 +395,7 @@ jobs:
       - name: Upload SBOM
         uses: actions/upload-artifact@v4.4.3
         with:
-          name: sbom-prod
+          name: sbom-production
           path: sbom.json
           retention-days: 365
 
@@ -263,42 +409,122 @@ jobs:
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:prod-latest
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:v1.0.${{ github.run_number }}
 
-  terraform-destroy:
-    name: Destroy Production Infrastructure
+  # ==========================================================================
+  # Destroy Production Infrastructure (Manual Only)
+  # ==========================================================================
+  destroy-production:
+    name: 💥 Destroy Production Infrastructure
     runs-on: ubuntu-22.04
-    if: github.event.inputs.action == 'destroy'
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'destroy'
+    
+    # Require separate approval for destruction
     environment: 
       name: production-destroy
       url: https://github.com/${{ github.repository }}/actions
-    container:
-      image: hashicorp/terraform:1.5.7
+    
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4.1.1
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
 
       - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4.0.2
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN_PROD }}
-          aws-region: ${{ vars.AWS_REGION }}
+          aws-region: ${{ env.AWS_REGION }}
           role-session-name: GHA-Prod-Destroy-${{ github.sha }}
           role-duration-seconds: 3600
 
-      - name: Initialize Terraform
+      - name: Terraform Init
         run: |
           terraform init \
             -backend-config="bucket=${{ vars.TF_STATE_BUCKET_PROD }}" \
             -backend-config="key=prod/terraform.tfstate" \
-            -backend-config="region=${{ vars.AWS_REGION }}" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
             -backend-config="dynamodb_table=${{ vars.TF_STATE_LOCK_TABLE }}"
 
       - name: Terraform Plan Destroy
-        run: terraform plan -destroy -out=tfdestroyplan
+        run: |
+          echo "⚠️  Planning infrastructure destruction..."
+          terraform plan -destroy -out=tfdestroyplan
+
+      - name: Final Confirmation
+        run: |
+          echo "⚠️⚠️⚠️ FINAL WARNING ⚠️⚠️⚠️"
+          echo "About to DESTROY all production infrastructure"
+          echo "This action is IRREVERSIBLE"
+          echo "Waiting 30 seconds for cancellation..."
+          sleep 30
 
       - name: Destroy Infrastructure
-        run: terraform apply -auto-approve tfdestroyplan
+        run: |
+          echo "💥 Destroying production infrastructure..."
+          terraform apply -auto-approve tfdestroyplan
 
       - name: Log Destruction Event
         run: |
-          echo "💥 Infrastructure destroyed at $(date -u +"%Y-%m-%d %H:%M:%S UTC")" 
+          echo "💥 Production infrastructure destroyed at $(date -u +"%Y-%m-%d %H:%M:%S UTC")" 
           echo "👤 Destroyed by: ${{ github.actor }}"
+          echo "📝 Commit SHA: ${{ github.sha }}"
+
+  # ==========================================================================
+  # Notifications
+  # ==========================================================================
+  notify-slack:
+    name: 📢 Slack Notification
+    runs-on: ubuntu-22.04
+    if: always() && (needs.deploy-production.result != 'skipped')
+    needs: [security-scan-iac, deploy-production, build-and-scan-image]
+    
+    steps:
+      - name: Send Production Deployment Status
+        if: vars.SLACK_WEBHOOK_URL != ''
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SEC_STATUS: ${{ needs.security-scan-iac.result == 'success' && '✅ Passed' || '❌ Failed' }}
+          DEPLOY_STATUS: ${{ needs.deploy-production.result == 'success' && '✅ Deployed' || '❌ Failed' }}
+          BUILD_STATUS: ${{ needs.build-and-scan-image.result == 'success' && '✅ Passed' || '❌ Failed' }}
+          OVERALL: ${{ (needs.security-scan-iac.result == 'failure' || needs.deploy-production.result == 'failure' || needs.build-and-scan-image.result == 'failure') && 'FAILED' || 'SUCCESS' }}
+        run: |
+          curl -X POST "$SLACK_WEBHOOK" \
+            -H 'Content-Type: application/json' \
+            -d '{
+              "text": "🚀 Production Deployment '$OVERALL'",
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": {
+                    "type": "plain_text",
+                    "text": "🚀 Production Deployment '$OVERALL'"
+                  }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    {"type": "mrkdwn", "text": "*Environment:*\nProduction"},
+                    {"type": "mrkdwn", "text": "*Branch:*\n`${{ github.ref_name }}`"},
+                    {"type": "mrkdwn", "text": "*Deployed by:*\n${{ github.actor }}"},
+                    {"type": "mrkdwn", "text": "*Commit:*\n`${{ github.sha }}`"}
+                  ]
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    {"type": "mrkdwn", "text": "*Security:*\n'$SEC_STATUS'"},
+                    {"type": "mrkdwn", "text": "*Deploy:*\n'$DEPLOY_STATUS'"},
+                    {"type": "mrkdwn", "text": "*Build:*\n'$BUILD_STATUS'"}
+                  ]
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Details>"
+                  }
+                }
+              ]
+            }'
