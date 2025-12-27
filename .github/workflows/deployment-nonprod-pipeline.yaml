@@ -1,11 +1,13 @@
-name: Non-Prod Deployment
+name: Deploy to Non-Production
 
 on:
   push:
     branches:
+      - nonprod
       - develop
   pull_request:
     branches:
+      - nonprod
       - develop
   workflow_dispatch:
     inputs:
@@ -22,8 +24,9 @@ permissions:
   id-token: write
   contents: read
   pull-requests: write
+  security-events: write
+  issues: write
 
-# Prevent concurrent Terraform runs against the same environment
 concurrency:
   group: terraform-nonprod
   cancel-in-progress: false
@@ -33,12 +36,40 @@ env:
   TF_VERSION: 1.5.7
 
 jobs:
-  # ===========================================================================
-  # PR-only validation job (plan without apply)
-  # ===========================================================================
-  validate-pr:
-    name: Validate PR Changes
+  # ========================================================================
+  # Security Scan (IaC Static Analysis)
+  # ========================================================================
+  security-scan-iac:
+    name: 🔒 Checkov Security Scan
     runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4.1.1
+
+      - name: Run Checkov IaC Security Scan
+        uses: bridgecrewio/checkov-action@v12.2867.0
+        with:
+          directory: .
+          framework: terraform
+          output_format: cli,sarif
+          output_file_path: console,checkov-results.sarif
+          soft_fail: false
+          download_external_modules: true
+          skip_check: CKV_AWS_51
+
+      - name: Upload Checkov Results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3.26.13
+        if: always()
+        with:
+          sarif_file: checkov-results.sarif
+
+  # =========================================================================
+  # PR Validation (Plan Preview Only - No Apply)
+  # =========================================================================
+  validate-pr:
+    name: 🔍 Validate PR Changes
+    runs-on: ubuntu-22.04
+    needs: security-scan-iac
     if: github.event_name == 'pull_request'
     
     steps:
@@ -66,16 +97,43 @@ jobs:
             -backend-config="region=${{ env.AWS_REGION }}" \
             -backend-config="dynamodb_table=${{ vars.TF_STATE_LOCK_TABLE }}"
 
-      - name: Terraform Format Check
-        run: terraform fmt -check -recursive
-
       - name: Terraform Validate
         run: terraform validate
 
+      - name: Terraform Format Check
+        run: terraform fmt -check -recursive
+
       - name: Terraform Plan (Preview Only)
         id: plan
-        run: terraform plan -no-color -input=false
+        run: |
+          terraform plan -no-color -input=false
         continue-on-error: true
+
+      - name: Convert Plan to JSON
+        if: success() || failure()
+        run: |
+          terraform plan -out=tfplan.binary -input=false
+          terraform show -json tfplan.binary > tfplan.json
+
+      - name: Run Checkov on Plan
+        uses: bridgecrewio/checkov-action@v12.2867.0
+        continue-on-error: true
+        with:
+          file: tfplan.json
+          framework: terraform_plan
+          output_format: cli,sarif,json
+          output_file_path: console,checkov-plan-results.sarif,checkov-results.json
+          soft_fail: false
+          compact: true
+          skip_check: CKV_AWS_51
+
+      - name: Upload Checkov Results
+        uses: actions/upload-artifact@v4.4.3
+        if: always()
+        with:
+          name: checkov-results-pr
+          path: checkov-results.json
+          retention-days: 30
 
       - name: Comment PR with Plan
         uses: actions/github-script@v7
@@ -94,54 +152,64 @@ jobs:
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: `## Terraform Plan (Non-Prod)
+              body: `## 🔍 Terraform Plan Preview (Non-Production)
             
             \`\`\`terraform
             ${truncated}
             \`\`\`
             
-            *This is a preview only. No changes will be applied until merged to develop branch.*
+            ### ✅ Security Checklist
+            - [ ] Infrastructure changes reviewed
+            - [ ] Security scan passed
+            - [ ] No sensitive data exposed
+            
+            *This is a preview only. No changes will be applied until merged to nonprod/develop branch.*
             
             *Plan generated at: ${new Date().toUTCString()}*`
             })
 
-  # ============================================================================
-  # Manual Approval Gate
-  # ============================================================================
-  approval-gate:
-    name: 🔒 Non-Prod Approval
+  # ==========================================================================
+  # Manual Approval Gate (Non-Production)
+  # ==========================================================================
+  nonprod-approval:
+    name: 🔐 Non-Production Approval
     runs-on: ubuntu-22.04
+    needs: security-scan-iac
     if: |
-      (github.event_name == 'push' && github.ref == 'refs/heads/develop') ||
+      (github.event_name == 'push' && (github.ref == 'refs/heads/nonprod' || github.ref == 'refs/heads/develop')) || 
       (github.event_name == 'workflow_dispatch')
     
-    # Single environment for all operations (deploy/destroy)
     environment:
-      name: nonprod
+      name: nonprod-approval
       url: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
     
     steps:
-      - name: Approval Checkpoint
+      - name: Non-Production Approval Checkpoint
         run: |
-          echo "✅ Non-Prod operation approved by: ${{ github.actor }}"
+          echo "🔐 Non-production deployment approved by: ${{ github.actor }}"
           echo "📅 Approval time: $(date -u +"%Y-%m-%d %H:%M:%S UTC")"
           echo "📝 Commit SHA: ${{ github.sha }}"
           echo "🔗 Run ID: ${{ github.run_id }}"
           echo "⚙️  Action: ${{ github.event.inputs.action || 'deploy' }}"
           echo ""
-          echo "⚠️  Proceeding with infrastructure changes..."
+          echo "Proceeding with non-production deployment in 5 seconds..."
+          sleep 5
 
-  # ============================================================================
-  # Deploy Infrastructure
-  # Plan and Apply in the SAME job to avoid stale plans
-  # ============================================================================
+  # ==========================================================================
+  # Deploy to Non-Production
+  # CRITICAL: Plan and Apply run in the SAME job to prevent stale plans
+  # ==========================================================================
   deploy-nonprod:
-    name: 🚀 Deploy to Non-Prod
+    name: 🚀 Deploy to Non-Production
     runs-on: ubuntu-22.04
-    needs: approval-gate
+    needs: nonprod-approval
     if: |
-      (github.event_name == 'push' && github.ref == 'refs/heads/develop') ||
+      (github.event_name == 'push' && (github.ref == 'refs/heads/nonprod' || github.ref == 'refs/heads/develop')) || 
       (github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'deploy')
+    
+    environment:
+      name: nonprod
+      url: https://nonprod.yourdomain.com
     
     steps:
       - name: Checkout Repository
@@ -171,25 +239,56 @@ jobs:
       - name: Terraform Validate
         run: terraform validate
 
-      # CRITICAL: Plan and Apply in the same job
+      - name: Terraform Format Check
+        run: terraform fmt -check -recursive
+
       - name: Terraform Plan
         id: plan
         run: |
+          echo "📋 Generating non-production execution plan..."
           terraform plan -out=tfplan.binary -input=false
-          echo "📋 Generating execution plan..."
           terraform show -no-color tfplan.binary
+
+      - name: Convert Plan to JSON for Security Analysis
+        run: terraform show -json tfplan.binary > tfplan.json
+
+      - name: Run Checkov on Terraform Plan
+        uses: bridgecrewio/checkov-action@v12.2867.0
+        with:
+          file: tfplan.json
+          framework: terraform_plan
+          output_format: cli,sarif,json
+          output_file_path: console,checkov-plan-results.sarif,checkov-results.json
+          soft_fail: false
+          compact: true
+          skip_check: CKV_AWS_51
+
+      - name: Upload Checkov Plan Results
+        uses: github/codeql-action/upload-sarif@v3.26.13
+        if: always()
+        with:
+          sarif_file: checkov-plan-results.sarif
+
+      - name: Upload Checkov JSON Results
+        uses: actions/upload-artifact@v4.4.3
+        with:
+          name: checkov-results-nonprod
+          path: checkov-results.json
+          retention-days: 30
 
       - name: Terraform Apply
         id: apply
         run: |
-          echo "🚀 Applying infrastructure changes..."
+          echo "🚀 Applying non-production infrastructure changes..."
           terraform apply -auto-approve tfplan.binary
 
       - name: Save Terraform Outputs
+        id: tf-outputs
         if: success()
         run: |
           terraform output -json > terraform-outputs.json
-          echo "✅ Deployment completed successfully!"
+          echo "ec2_public_ip=$(terraform output -raw ec2_public_ip 2>/dev/null || echo 'not-created')" >> $GITHUB_OUTPUT
+          echo "✅ Non-production deployment completed successfully!"
           terraform output
 
       - name: Upload Terraform Outputs
@@ -200,12 +299,13 @@ jobs:
           path: terraform-outputs.json
           retention-days: 30
 
-      - name: Deployment Summary
+      - name: Create Deployment Record
         if: success()
         run: |
-          echo "## 🎉 Non-Prod Deployment Complete" >> $GITHUB_STEP_SUMMARY
+          echo "## 🎉 Non-Production Deployment Complete" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Deployed by:** ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Approved by:** ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
           echo "**Timestamp:** $(date -u +"%Y-%m-%d %H:%M:%S UTC")" >> $GITHUB_STEP_SUMMARY
           echo "**Commit SHA:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -214,13 +314,98 @@ jobs:
           terraform output >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
 
-  # ============================================================================
-  # Destroy Infrastructure (manual trigger with destroy option)
-  # ============================================================================
-  destroy-nonprod:
-    name: 💥 Destroy Non-Prod Infrastructure
+  # ==========================================================================
+  # Build and Scan Container Image
+  # ==========================================================================
+  build-and-scan-image:
+    name: 🐳 Build & Scan Container Image
+    needs: deploy-nonprod
     runs-on: ubuntu-22.04
-    needs: approval-gate
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4.1.1
+
+      - name: Configure AWS Credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4.0.2
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN_NONPROD }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: GHA-NonProd-Build-${{ github.sha }}
+          role-duration-seconds: 3600
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2.0.1
+
+      - name: Create ECR Repository if not exists
+        env:
+          ECR_REPOSITORY: demo-app-images-nonprod
+        run: |
+          aws ecr describe-repositories --repository-names ${ECR_REPOSITORY} --region ${{ env.AWS_REGION }} || \
+          aws ecr create-repository \
+            --repository-name ${ECR_REPOSITORY} \
+            --image-scanning-configuration scanOnPush=true \
+            --encryption-configuration encryptionType=KMS \
+            --region ${{ env.AWS_REGION }}
+
+      - name: Build Container Image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: demo-app-images-nonprod
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -f docker/Dockerfile docker/
+          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:nonprod-latest
+          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:v1.0.${{ github.run_number }}
+
+      - name: Run Trivy Security Scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ steps.login-ecr.outputs.registry }}/demo-app-images-nonprod:${{ github.sha }}
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH,MEDIUM'
+          exit-code: '0'
+          ignore-unfixed: true
+
+      - name: Upload Trivy Results
+        uses: github/codeql-action/upload-sarif@v3.26.13
+        if: always()
+        with:
+          sarif_file: trivy-results.sarif
+
+      - name: Generate SBOM
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ steps.login-ecr.outputs.registry }}/demo-app-images-nonprod:${{ github.sha }}
+          format: 'cyclonedx'
+          output: 'sbom.json'
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4.4.3
+        with:
+          name: sbom-nonprod
+          path: sbom.json
+          retention-days: 90
+
+      - name: Push Image to ECR
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: demo-app-images-nonprod
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:nonprod-latest
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:v1.0.${{ github.run_number }}
+
+  # ==========================================================================
+  # Destroy Non-Production Infrastructure (Manual Only)
+  # ==========================================================================
+  destroy-nonprod:
+    name: 💥 Destroy Non-Production Infrastructure
+    runs-on: ubuntu-22.04
+    needs: nonprod-approval
     if: github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'destroy'
     
     steps:
@@ -254,15 +439,82 @@ jobs:
           terraform plan -destroy -out=tfdestroyplan
           terraform show -no-color tfdestroyplan
 
-      - name: Terraform Destroy
+      - name: Final Confirmation
         run: |
-          echo "💥 Destroying non-prod infrastructure..."
+          echo "⚠️ WARNING: About to destroy non-production infrastructure"
+          echo "This action is IRREVERSIBLE"
+          echo "Waiting 15 seconds for cancellation..."
+          sleep 15
+
+      - name: Destroy Infrastructure
+        run: |
+          echo "💥 Destroying non-production infrastructure..."
           terraform apply -auto-approve tfdestroyplan
 
-      - name: Destruction Summary
+      - name: Log Destruction Event
         run: |
-          echo "## 💥 Non-Prod Infrastructure Destroyed" >> $GITHUB_STEP_SUMMARY
+          echo "## 💥 Non-Production Infrastructure Destroyed" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Destroyed by:** ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
           echo "**Timestamp:** $(date -u +"%Y-%m-%d %H:%M:%S UTC")" >> $GITHUB_STEP_SUMMARY
           echo "**Commit SHA:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+
+  # ==========================================================================
+  # Notifications
+  # ==========================================================================
+  notify-slack:
+    name: 📢 Slack Notification
+    runs-on: ubuntu-22.04
+    if: always() && (needs.deploy-nonprod.result != 'skipped' || needs.destroy-nonprod.result != 'skipped')
+    needs: [security-scan-iac, deploy-nonprod, destroy-nonprod, build-and-scan-image]
+    
+    steps:
+      - name: Send Non-Production Status
+        if: vars.SLACK_WEBHOOK_URL != ''
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SEC_STATUS: ${{ needs.security-scan-iac.result == 'success' && '✅ Passed' || needs.security-scan-iac.result == 'skipped' && '⭐️ Skipped' || '❌ Failed' }}
+          DEPLOY_STATUS: ${{ needs.deploy-nonprod.result == 'success' && '✅ Deployed' || needs.deploy-nonprod.result == 'skipped' && '⭐️ Skipped' || '❌ Failed' }}
+          DESTROY_STATUS: ${{ needs.destroy-nonprod.result == 'success' && '💥 Destroyed' || needs.destroy-nonprod.result == 'skipped' && '⭐️ Skipped' || '❌ Failed' }}
+          BUILD_STATUS: ${{ needs.build-and-scan-image.result == 'success' && '✅ Passed' || needs.build-and-scan-image.result == 'skipped' && '⭐️ Skipped' || '❌ Failed' }}
+          OVERALL: ${{ (needs.security-scan-iac.result == 'failure' || needs.deploy-nonprod.result == 'failure' || needs.destroy-nonprod.result == 'failure' || needs.build-and-scan-image.result == 'failure') && 'FAILED' || 'SUCCESS' }}
+        run: |
+          curl -X POST "$SLACK_WEBHOOK" \
+            -H 'Content-Type: application/json' \
+            -d '{
+              "text": "🚀 Non-Production Pipeline '$OVERALL'",
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": {
+                    "type": "plain_text",
+                    "text": "🚀 Non-Production Pipeline '$OVERALL'"
+                  }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    {"type": "mrkdwn", "text": "*Environment:*\nNon-Production"},
+                    {"type": "mrkdwn", "text": "*Branch:*\n`${{ github.ref_name }}`"},
+                    {"type": "mrkdwn", "text": "*By:*\n${{ github.actor }}"},
+                    {"type": "mrkdwn", "text": "*Commit:*\n`${{ github.sha }}`"}
+                  ]
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    {"type": "mrkdwn", "text": "*Security:*\n'$SEC_STATUS'"},
+                    {"type": "mrkdwn", "text": "*Deploy:*\n'$DEPLOY_STATUS'"},
+                    {"type": "mrkdwn", "text": "*Destroy:*\n'$DESTROY_STATUS'"},
+                    {"type": "mrkdwn", "text": "*Build:*\n'$BUILD_STATUS'"}
+                  ]
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Details>"
+                  }
+                }
+              ]
+            }'
