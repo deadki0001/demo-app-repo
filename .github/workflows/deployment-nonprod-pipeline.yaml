@@ -1,12 +1,14 @@
-name: Deploy to Production (Fixed)
+name: Deploy to Non-Production
 
 on:
   push:
-    branches: 
-      - main
+    branches:
+      - nonprod
+      - develop
   pull_request:
     branches:
-      - main
+      - nonprod
+      - develop
   workflow_dispatch:
     inputs:
       action:
@@ -25,9 +27,8 @@ permissions:
   security-events: write
   issues: write
 
-# Prevent concurrent Terraform runs against production
 concurrency:
-  group: terraform-production
+  group: terraform-nonprod
   cancel-in-progress: false
 
 env:
@@ -35,9 +36,9 @@ env:
   TF_VERSION: 1.5.7
 
 jobs:
-  # ==========================================================================
+  # ========================================================================
   # Security Scan (IaC Static Analysis)
-  # ==========================================================================
+  # ========================================================================
   security-scan-iac:
     name: 🔒 Checkov Security Scan
     runs-on: ubuntu-22.04
@@ -83,16 +84,16 @@ jobs:
       - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4.0.2
         with:
-          role-to-assume: ${{ vars.AWS_ROLE_ARN_PROD }}
+          role-to-assume: ${{ vars.AWS_ROLE_ARN_NONPROD }}
           aws-region: ${{ env.AWS_REGION }}
-          role-session-name: GHA-Prod-PR-${{ github.sha }}
+          role-session-name: GHA-NonProd-PR-${{ github.sha }}
           role-duration-seconds: 3600
 
       - name: Terraform Init
         run: |
           terraform init \
-            -backend-config="bucket=${{ vars.TF_STATE_BUCKET_PROD }}" \
-            -backend-config="key=prod/terraform.tfstate" \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET_NONPROD }}" \
+            -backend-config="key=nonprod/terraform.tfstate" \
             -backend-config="region=${{ env.AWS_REGION }}" \
             -backend-config="dynamodb_table=${{ vars.TF_STATE_LOCK_TABLE }}"
 
@@ -151,73 +152,64 @@ jobs:
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: `## 🔍 Terraform Plan Preview (Production)
-            
-            ⚠️ **This is a production deployment preview**
+              body: `## 🔍 Terraform Plan Preview (Non-Production)
             
             \`\`\`terraform
             ${truncated}
             \`\`\`
             
-            ### ✅ Required Approvals
-            This PR requires approval from authorized team members before deployment.
-            
-            **Security Checklist:**
+            ### ✅ Security Checklist
             - [ ] Infrastructure changes reviewed
             - [ ] Security scan passed
             - [ ] No sensitive data exposed
-            - [ ] Rollback plan confirmed
             
-            *This is a preview only. No changes will be applied until merged to main branch and manually approved.*
+            *This is a preview only. No changes will be applied until merged to nonprod/develop branch.*
             
             *Plan generated at: ${new Date().toUTCString()}*`
             })
 
   # ==========================================================================
-  # Manual Approval Gate (Production)
-  # Uses GitHub Environments with required reviewers
+  # Manual Approval Gate (Non-Production)
   # ==========================================================================
-  production-approval:
-    name: 🔐 Production Deployment Approval
+  nonprod-approval:
+    name: 🔐 Non-Production Approval
     runs-on: ubuntu-22.04
     needs: security-scan-iac
     if: |
-      (github.event_name == 'push' && github.ref == 'refs/heads/main') || 
-      (github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'deploy')
+      (github.event_name == 'push' && (github.ref == 'refs/heads/nonprod' || github.ref == 'refs/heads/develop')) || 
+      (github.event_name == 'workflow_dispatch')
     
-    # CRITICAL: Configure required reviewers in GitHub repo settings
-    # Settings → Environments → production-approval → Required reviewers
     environment:
-      name: production-approval
+      name: nonprod-approval
       url: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
     
     steps:
-      - name: Production Approval Checkpoint
+      - name: Non-Production Approval Checkpoint
         run: |
-          echo "🔐 Production deployment approved by: ${{ github.actor }}"
+          echo "🔐 Non-production deployment approved by: ${{ github.actor }}"
           echo "📅 Approval time: $(date -u +"%Y-%m-%d %H:%M:%S UTC")"
           echo "📝 Commit SHA: ${{ github.sha }}"
           echo "🔗 Run ID: ${{ github.run_id }}"
-          echo "⚠️  WARNING: Deploying to PRODUCTION environment"
+          echo "⚙️  Action: ${{ github.event.inputs.action || 'deploy' }}"
           echo ""
-          echo "Proceeding with production deployment in 10 seconds..."
-          sleep 10
+          echo "Proceeding with non-production deployment in 5 seconds..."
+          sleep 5
 
   # ==========================================================================
-  # Deploy to Production
+  # Deploy to Non-Production
   # CRITICAL: Plan and Apply run in the SAME job to prevent stale plans
   # ==========================================================================
-  deploy-production:
-    name: 🚀 Deploy to Production
+  deploy-nonprod:
+    name: 🚀 Deploy to Non-Production
     runs-on: ubuntu-22.04
-    needs: production-approval
+    needs: nonprod-approval
     if: |
-      (github.event_name == 'push' && github.ref == 'refs/heads/main') || 
+      (github.event_name == 'push' && (github.ref == 'refs/heads/nonprod' || github.ref == 'refs/heads/develop')) || 
       (github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'deploy')
     
     environment:
-      name: production
-      url: https://yourdomain.com
+      name: nonprod
+      url: https://nonprod.yourdomain.com
     
     steps:
       - name: Checkout Repository
@@ -231,16 +223,16 @@ jobs:
       - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4.0.2
         with:
-          role-to-assume: ${{ vars.AWS_ROLE_ARN_PROD }}
+          role-to-assume: ${{ vars.AWS_ROLE_ARN_NONPROD }}
           aws-region: ${{ env.AWS_REGION }}
-          role-session-name: GHA-Prod-Deploy-${{ github.sha }}
+          role-session-name: GHA-NonProd-Deploy-${{ github.sha }}
           role-duration-seconds: 3600
 
       - name: Terraform Init
         run: |
           terraform init \
-            -backend-config="bucket=${{ vars.TF_STATE_BUCKET_PROD }}" \
-            -backend-config="key=prod/terraform.tfstate" \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET_NONPROD }}" \
+            -backend-config="key=nonprod/terraform.tfstate" \
             -backend-config="region=${{ env.AWS_REGION }}" \
             -backend-config="dynamodb_table=${{ vars.TF_STATE_LOCK_TABLE }}"
 
@@ -250,12 +242,10 @@ jobs:
       - name: Terraform Format Check
         run: terraform fmt -check -recursive
 
-      # CRITICAL: Plan and Apply in the same job
-      # This ensures the plan is fresh and matches current state
       - name: Terraform Plan
         id: plan
         run: |
-          echo "📋 Generating production execution plan..."
+          echo "📋 Generating non-production execution plan..."
           terraform plan -out=tfplan.binary -input=false
           terraform show -no-color tfplan.binary
 
@@ -282,14 +272,14 @@ jobs:
       - name: Upload Checkov JSON Results
         uses: actions/upload-artifact@v4.4.3
         with:
-          name: checkov-results-production
+          name: checkov-results-nonprod
           path: checkov-results.json
-          retention-days: 90
+          retention-days: 30
 
       - name: Terraform Apply
         id: apply
         run: |
-          echo "🚀 Applying production infrastructure changes..."
+          echo "🚀 Applying non-production infrastructure changes..."
           terraform apply -auto-approve tfplan.binary
 
       - name: Save Terraform Outputs
@@ -298,21 +288,21 @@ jobs:
         run: |
           terraform output -json > terraform-outputs.json
           echo "ec2_public_ip=$(terraform output -raw ec2_public_ip 2>/dev/null || echo 'not-created')" >> $GITHUB_OUTPUT
-          echo "✅ Production deployment completed successfully!"
+          echo "✅ Non-production deployment completed successfully!"
           terraform output
 
       - name: Upload Terraform Outputs
         if: success()
         uses: actions/upload-artifact@v4.4.3
         with:
-          name: terraform-outputs-production
+          name: terraform-outputs-nonprod
           path: terraform-outputs.json
-          retention-days: 90
+          retention-days: 30
 
       - name: Create Deployment Record
         if: success()
         run: |
-          echo "## 🎉 Production Deployment Complete" >> $GITHUB_STEP_SUMMARY
+          echo "## 🎉 Non-Production Deployment Complete" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Deployed by:** ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
           echo "**Approved by:** ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
@@ -329,7 +319,7 @@ jobs:
   # ==========================================================================
   build-and-scan-image:
     name: 🐳 Build & Scan Container Image
-    needs: deploy-production
+    needs: deploy-nonprod
     runs-on: ubuntu-22.04
     
     steps:
@@ -339,9 +329,9 @@ jobs:
       - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4.0.2
         with:
-          role-to-assume: ${{ vars.AWS_ROLE_ARN_PROD }}
+          role-to-assume: ${{ vars.AWS_ROLE_ARN_NONPROD }}
           aws-region: ${{ env.AWS_REGION }}
-          role-session-name: GHA-Prod-Build-${{ github.sha }}
+          role-session-name: GHA-NonProd-Build-${{ github.sha }}
           role-duration-seconds: 3600
 
       - name: Login to Amazon ECR
@@ -350,7 +340,7 @@ jobs:
 
       - name: Create ECR Repository if not exists
         env:
-          ECR_REPOSITORY: demo-app-images
+          ECR_REPOSITORY: demo-app-images-nonprod
         run: |
           aws ecr describe-repositories --repository-names ${ECR_REPOSITORY} --region ${{ env.AWS_REGION }} || \
           aws ecr create-repository \
@@ -362,21 +352,21 @@ jobs:
       - name: Build Container Image
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          ECR_REPOSITORY: demo-app-images
+          ECR_REPOSITORY: demo-app-images-nonprod
           IMAGE_TAG: ${{ github.sha }}
         run: |
           docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -f docker/Dockerfile docker/
-          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:prod-latest
+          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:nonprod-latest
           docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:v1.0.${{ github.run_number }}
 
-      - name: Run Trivy Security Scan (Strict)
+      - name: Run Trivy Security Scan
         uses: aquasecurity/trivy-action@0.28.0
         with:
-          image-ref: ${{ steps.login-ecr.outputs.registry }}/demo-app-images:${{ github.sha }}
+          image-ref: ${{ steps.login-ecr.outputs.registry }}/demo-app-images-nonprod:${{ github.sha }}
           format: 'sarif'
           output: 'trivy-results.sarif'
           severity: 'CRITICAL,HIGH,MEDIUM'
-          exit-code: '1'
+          exit-code: '0'
           ignore-unfixed: true
 
       - name: Upload Trivy Results
@@ -388,39 +378,35 @@ jobs:
       - name: Generate SBOM
         uses: aquasecurity/trivy-action@0.28.0
         with:
-          image-ref: ${{ steps.login-ecr.outputs.registry }}/demo-app-images:${{ github.sha }}
+          image-ref: ${{ steps.login-ecr.outputs.registry }}/demo-app-images-nonprod:${{ github.sha }}
           format: 'cyclonedx'
           output: 'sbom.json'
 
       - name: Upload SBOM
         uses: actions/upload-artifact@v4.4.3
         with:
-          name: sbom-production
+          name: sbom-nonprod
           path: sbom.json
-          retention-days: 365
+          retention-days: 90
 
       - name: Push Image to ECR
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          ECR_REPOSITORY: demo-app-images
+          ECR_REPOSITORY: demo-app-images-nonprod
           IMAGE_TAG: ${{ github.sha }}
         run: |
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:prod-latest
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:nonprod-latest
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:v1.0.${{ github.run_number }}
 
   # ==========================================================================
-  # Destroy Production Infrastructure (Manual Only)
+  # Destroy Non-Production Infrastructure (Manual Only)
   # ==========================================================================
-  destroy-production:
-    name: 💥 Destroy Production Infrastructure
+  destroy-nonprod:
+    name: 💥 Destroy Non-Production Infrastructure
     runs-on: ubuntu-22.04
+    needs: nonprod-approval
     if: github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'destroy'
-    
-    # Require separate approval for destruction
-    environment: 
-      name: production-destroy
-      url: https://github.com/${{ github.repository }}/actions
     
     steps:
       - name: Checkout Repository
@@ -434,16 +420,16 @@ jobs:
       - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4.0.2
         with:
-          role-to-assume: ${{ vars.AWS_ROLE_ARN_PROD }}
+          role-to-assume: ${{ vars.AWS_ROLE_ARN_NONPROD }}
           aws-region: ${{ env.AWS_REGION }}
-          role-session-name: GHA-Prod-Destroy-${{ github.sha }}
+          role-session-name: GHA-NonProd-Destroy-${{ github.sha }}
           role-duration-seconds: 3600
 
       - name: Terraform Init
         run: |
           terraform init \
-            -backend-config="bucket=${{ vars.TF_STATE_BUCKET_PROD }}" \
-            -backend-config="key=prod/terraform.tfstate" \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET_NONPROD }}" \
+            -backend-config="key=nonprod/terraform.tfstate" \
             -backend-config="region=${{ env.AWS_REGION }}" \
             -backend-config="dynamodb_table=${{ vars.TF_STATE_LOCK_TABLE }}"
 
@@ -451,25 +437,27 @@ jobs:
         run: |
           echo "⚠️  Planning infrastructure destruction..."
           terraform plan -destroy -out=tfdestroyplan
+          terraform show -no-color tfdestroyplan
 
       - name: Final Confirmation
         run: |
-          echo "⚠️⚠️⚠️ FINAL WARNING ⚠️⚠️⚠️"
-          echo "About to DESTROY all production infrastructure"
+          echo "⚠️ WARNING: About to destroy non-production infrastructure"
           echo "This action is IRREVERSIBLE"
-          echo "Waiting 30 seconds for cancellation..."
-          sleep 30
+          echo "Waiting 15 seconds for cancellation..."
+          sleep 15
 
       - name: Destroy Infrastructure
         run: |
-          echo "💥 Destroying production infrastructure..."
+          echo "💥 Destroying non-production infrastructure..."
           terraform apply -auto-approve tfdestroyplan
 
       - name: Log Destruction Event
         run: |
-          echo "💥 Production infrastructure destroyed at $(date -u +"%Y-%m-%d %H:%M:%S UTC")" 
-          echo "👤 Destroyed by: ${{ github.actor }}"
-          echo "📝 Commit SHA: ${{ github.sha }}"
+          echo "## 💥 Non-Production Infrastructure Destroyed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Destroyed by:** ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Timestamp:** $(date -u +"%Y-%m-%d %H:%M:%S UTC")" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit SHA:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
 
   # ==========================================================================
   # Notifications
@@ -477,37 +465,38 @@ jobs:
   notify-slack:
     name: 📢 Slack Notification
     runs-on: ubuntu-22.04
-    if: always() && (needs.deploy-production.result != 'skipped')
-    needs: [security-scan-iac, deploy-production, build-and-scan-image]
+    if: always() && (needs.deploy-nonprod.result != 'skipped' || needs.destroy-nonprod.result != 'skipped')
+    needs: [security-scan-iac, deploy-nonprod, destroy-nonprod, build-and-scan-image]
     
     steps:
-      - name: Send Production Deployment Status
+      - name: Send Non-Production Status
         if: vars.SLACK_WEBHOOK_URL != ''
         env:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
-          SEC_STATUS: ${{ needs.security-scan-iac.result == 'success' && '✅ Passed' || '❌ Failed' }}
-          DEPLOY_STATUS: ${{ needs.deploy-production.result == 'success' && '✅ Deployed' || '❌ Failed' }}
-          BUILD_STATUS: ${{ needs.build-and-scan-image.result == 'success' && '✅ Passed' || '❌ Failed' }}
-          OVERALL: ${{ (needs.security-scan-iac.result == 'failure' || needs.deploy-production.result == 'failure' || needs.build-and-scan-image.result == 'failure') && 'FAILED' || 'SUCCESS' }}
+          SEC_STATUS: ${{ needs.security-scan-iac.result == 'success' && '✅ Passed' || needs.security-scan-iac.result == 'skipped' && '⭐️ Skipped' || '❌ Failed' }}
+          DEPLOY_STATUS: ${{ needs.deploy-nonprod.result == 'success' && '✅ Deployed' || needs.deploy-nonprod.result == 'skipped' && '⭐️ Skipped' || '❌ Failed' }}
+          DESTROY_STATUS: ${{ needs.destroy-nonprod.result == 'success' && '💥 Destroyed' || needs.destroy-nonprod.result == 'skipped' && '⭐️ Skipped' || '❌ Failed' }}
+          BUILD_STATUS: ${{ needs.build-and-scan-image.result == 'success' && '✅ Passed' || needs.build-and-scan-image.result == 'skipped' && '⭐️ Skipped' || '❌ Failed' }}
+          OVERALL: ${{ (needs.security-scan-iac.result == 'failure' || needs.deploy-nonprod.result == 'failure' || needs.destroy-nonprod.result == 'failure' || needs.build-and-scan-image.result == 'failure') && 'FAILED' || 'SUCCESS' }}
         run: |
           curl -X POST "$SLACK_WEBHOOK" \
             -H 'Content-Type: application/json' \
             -d '{
-              "text": "🚀 Production Deployment '$OVERALL'",
+              "text": "🚀 Non-Production Pipeline '$OVERALL'",
               "blocks": [
                 {
                   "type": "header",
                   "text": {
                     "type": "plain_text",
-                    "text": "🚀 Production Deployment '$OVERALL'"
+                    "text": "🚀 Non-Production Pipeline '$OVERALL'"
                   }
                 },
                 {
                   "type": "section",
                   "fields": [
-                    {"type": "mrkdwn", "text": "*Environment:*\nProduction"},
+                    {"type": "mrkdwn", "text": "*Environment:*\nNon-Production"},
                     {"type": "mrkdwn", "text": "*Branch:*\n`${{ github.ref_name }}`"},
-                    {"type": "mrkdwn", "text": "*Deployed by:*\n${{ github.actor }}"},
+                    {"type": "mrkdwn", "text": "*By:*\n${{ github.actor }}"},
                     {"type": "mrkdwn", "text": "*Commit:*\n`${{ github.sha }}`"}
                   ]
                 },
@@ -516,6 +505,7 @@ jobs:
                   "fields": [
                     {"type": "mrkdwn", "text": "*Security:*\n'$SEC_STATUS'"},
                     {"type": "mrkdwn", "text": "*Deploy:*\n'$DEPLOY_STATUS'"},
+                    {"type": "mrkdwn", "text": "*Destroy:*\n'$DESTROY_STATUS'"},
                     {"type": "mrkdwn", "text": "*Build:*\n'$BUILD_STATUS'"}
                   ]
                 },
