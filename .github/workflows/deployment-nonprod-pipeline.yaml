@@ -4,11 +4,9 @@ on:
   push:
     branches:
       - nonprod
-      - develop
   pull_request:
     branches:
       - nonprod
-      - develop
   workflow_dispatch:
     inputs:
       action:
@@ -163,7 +161,7 @@ jobs:
             - [ ] Security scan passed
             - [ ] No sensitive data exposed
             
-            *This is a preview only. No changes will be applied until merged to nonprod/develop branch.*
+            *This is a preview only. No changes will be applied until merged to nonprod branch.*
             
             *Plan generated at: ${new Date().toUTCString()}*`
             })
@@ -176,7 +174,7 @@ jobs:
     runs-on: ubuntu-22.04
     needs: security-scan-iac
     if: |
-      (github.event_name == 'push' && (github.ref == 'refs/heads/nonprod' || github.ref == 'refs/heads/develop')) || 
+      (github.event_name == 'push' && (github.ref == 'refs/heads/nonprod' || github.ref == 'refs/heads')) || 
       (github.event_name == 'workflow_dispatch')
     
     environment:
