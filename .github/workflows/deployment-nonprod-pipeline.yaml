@@ -4,11 +4,9 @@ on:
   push:
     branches:
       - nonprod
-      - develop
   pull_request:
     branches:
       - nonprod
-      - develop
   workflow_dispatch:
     inputs:
       action:
@@ -163,7 +161,7 @@ jobs:
             - [ ] Security scan passed
             - [ ] No sensitive data exposed
             
-            *This is a preview only. No changes will be applied until merged to nonprod/develop branch.*
+            *This is a preview only. No changes will be applied until merged to nonprod branch.*
             
             *Plan generated at: ${new Date().toUTCString()}*`
             })
@@ -176,7 +174,7 @@ jobs:
     runs-on: ubuntu-22.04
     needs: security-scan-iac
     if: |
-      (github.event_name == 'push' && (github.ref == 'refs/heads/nonprod' || github.ref == 'refs/heads/develop')) || 
+      (github.event_name == 'push' && github.ref == 'refs/heads/nonprod') || 
       (github.event_name == 'workflow_dispatch')
     
     environment:
@@ -204,7 +202,7 @@ jobs:
     runs-on: ubuntu-22.04
     needs: nonprod-approval
     if: |
-      (github.event_name == 'push' && (github.ref == 'refs/heads/nonprod' || github.ref == 'refs/heads/develop')) || 
+      (github.event_name == 'push' && github.ref == 'refs/heads/nonprod') || 
       (github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'deploy')
     
     environment:
@@ -286,10 +284,22 @@ jobs:
         id: tf-outputs
         if: success()
         run: |
-          terraform output -json > terraform-outputs.json
-          echo "ec2_public_ip=$(terraform output -raw ec2_public_ip 2>/dev/null || echo 'not-created')" >> $GITHUB_OUTPUT
+          # Create outputs file (will be empty if no outputs defined)
+          terraform output -json > terraform-outputs.json || echo "{}" > terraform-outputs.json
+          
+          # Try to get specific outputs, use fallback if not available
+          EC2_IP=$(terraform output -raw ec2_public_ip 2>/dev/null || echo 'not-available')
+          echo "ec2_public_ip=${EC2_IP}" >> $GITHUB_OUTPUT
+          
           echo "✅ Non-production deployment completed successfully!"
-          terraform output
+          
+          # Only display outputs if they exist
+          if terraform output 2>/dev/null | grep -q .; then
+            echo "📊 Terraform Outputs:"
+            terraform output
+          else
+            echo "ℹ️  No Terraform outputs defined"
+          fi
 
       - name: Upload Terraform Outputs
         if: success()
@@ -309,10 +319,16 @@ jobs:
           echo "**Timestamp:** $(date -u +"%Y-%m-%d %H:%M:%S UTC")" >> $GITHUB_STEP_SUMMARY
           echo "**Commit SHA:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Terraform Outputs:**" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          terraform output >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
+          
+          # Only show outputs if they exist
+          if terraform output 2>/dev/null | grep -q .; then
+            echo "**Terraform Outputs:**" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            terraform output >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          else
+            echo "**Terraform Outputs:** None defined" >> $GITHUB_STEP_SUMMARY
+          fi
 
   # ==========================================================================
   # Build and Scan Container Image
@@ -460,61 +476,51 @@ jobs:
           echo "**Commit SHA:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
 
   # ==========================================================================
-  # Notifications
+  # Discord Notifications
   # ==========================================================================
-  notify-slack:
-    name: 📢 Slack Notification
+  notify-discord:
+    name: 📢 Discord Notification
     runs-on: ubuntu-22.04
     if: always() && (needs.deploy-nonprod.result != 'skipped' || needs.destroy-nonprod.result != 'skipped')
     needs: [security-scan-iac, deploy-nonprod, destroy-nonprod, build-and-scan-image]
     
     steps:
-      - name: Send Non-Production Status
-        if: vars.SLACK_WEBHOOK_URL != ''
+      - name: Send Non-Production Status to Discord
         env:
-          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
           SEC_STATUS: ${{ needs.security-scan-iac.result == 'success' && '✅ Passed' || needs.security-scan-iac.result == 'skipped' && '⭐️ Skipped' || '❌ Failed' }}
           DEPLOY_STATUS: ${{ needs.deploy-nonprod.result == 'success' && '✅ Deployed' || needs.deploy-nonprod.result == 'skipped' && '⭐️ Skipped' || '❌ Failed' }}
           DESTROY_STATUS: ${{ needs.destroy-nonprod.result == 'success' && '💥 Destroyed' || needs.destroy-nonprod.result == 'skipped' && '⭐️ Skipped' || '❌ Failed' }}
           BUILD_STATUS: ${{ needs.build-and-scan-image.result == 'success' && '✅ Passed' || needs.build-and-scan-image.result == 'skipped' && '⭐️ Skipped' || '❌ Failed' }}
-          OVERALL: ${{ (needs.security-scan-iac.result == 'failure' || needs.deploy-nonprod.result == 'failure' || needs.destroy-nonprod.result == 'failure' || needs.build-and-scan-image.result == 'failure') && 'FAILED' || 'SUCCESS' }}
+          OVERALL_STATUS: ${{ (needs.security-scan-iac.result == 'failure' || needs.deploy-nonprod.result == 'failure' || needs.destroy-nonprod.result == 'failure' || needs.build-and-scan-image.result == 'failure') && '❌ FAILED' || '✅ SUCCESS' }}
+          OVERALL_COLOR: ${{ (needs.security-scan-iac.result == 'failure' || needs.deploy-nonprod.result == 'failure' || needs.destroy-nonprod.result == 'failure' || needs.build-and-scan-image.result == 'failure') && '15158332' || '3066993' }}
         run: |
-          curl -X POST "$SLACK_WEBHOOK" \
-            -H 'Content-Type: application/json' \
-            -d '{
-              "text": "🚀 Non-Production Pipeline '$OVERALL'",
-              "blocks": [
-                {
-                  "type": "header",
-                  "text": {
-                    "type": "plain_text",
-                    "text": "🚀 Non-Production Pipeline '$OVERALL'"
-                  }
-                },
-                {
-                  "type": "section",
-                  "fields": [
-                    {"type": "mrkdwn", "text": "*Environment:*\nNon-Production"},
-                    {"type": "mrkdwn", "text": "*Branch:*\n`${{ github.ref_name }}`"},
-                    {"type": "mrkdwn", "text": "*By:*\n${{ github.actor }}"},
-                    {"type": "mrkdwn", "text": "*Commit:*\n`${{ github.sha }}`"}
-                  ]
-                },
-                {
-                  "type": "section",
-                  "fields": [
-                    {"type": "mrkdwn", "text": "*Security:*\n'$SEC_STATUS'"},
-                    {"type": "mrkdwn", "text": "*Deploy:*\n'$DEPLOY_STATUS'"},
-                    {"type": "mrkdwn", "text": "*Destroy:*\n'$DESTROY_STATUS'"},
-                    {"type": "mrkdwn", "text": "*Build:*\n'$BUILD_STATUS'"}
-                  ]
-                },
-                {
-                  "type": "section",
-                  "text": {
-                    "type": "mrkdwn",
-                    "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Details>"
-                  }
-                }
-              ]
-            }'
+          cat > payload.json <<'EOF'
+          {
+            "embeds": [{
+              "title": "🔧 Non-Production Deployment",
+              "description": "**Status:** ${OVERALL_STATUS}\n**Branch:** `${{ github.ref_name }}`\n**By:** ${{ github.actor }}",
+              "color": ${OVERALL_COLOR},
+              "fields": [
+                {"name": "🔒 Security", "value": "${SEC_STATUS}", "inline": true},
+                {"name": "🚀 Deploy", "value": "${DEPLOY_STATUS}", "inline": true},
+                {"name": "💥 Destroy", "value": "${DESTROY_STATUS}", "inline": true},
+                {"name": "🐳 Build", "value": "${BUILD_STATUS}", "inline": true},
+                {"name": "🔗 Details", "value": "[View Run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})", "inline": false}
+              ],
+              "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"
+            }]
+          }
+          EOF
+          
+          # Replace environment variables
+          sed -i "s/\${OVERALL_STATUS}/$OVERALL_STATUS/g" payload.json
+          sed -i "s/\${OVERALL_COLOR}/$OVERALL_COLOR/g" payload.json
+          sed -i "s/\${SEC_STATUS}/$SEC_STATUS/g" payload.json
+          sed -i "s/\${DEPLOY_STATUS}/$DEPLOY_STATUS/g" payload.json
+          sed -i "s/\${DESTROY_STATUS}/$DESTROY_STATUS/g" payload.json
+          sed -i "s/\${BUILD_STATUS}/$BUILD_STATUS/g" payload.json
+          
+          curl -sS -X POST "$DISCORD_WEBHOOK" \
+            -H "Content-Type: application/json" \
+            --data @payload.json
