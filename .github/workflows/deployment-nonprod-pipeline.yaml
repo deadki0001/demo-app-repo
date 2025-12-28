@@ -174,7 +174,7 @@ jobs:
     runs-on: ubuntu-22.04
     needs: security-scan-iac
     if: |
-      (github.event_name == 'push' && (github.ref == 'refs/heads/nonprod' || github.ref == 'refs/heads/develop')) || 
+      (github.event_name == 'push' && github.ref == 'refs/heads/nonprod') || 
       (github.event_name == 'workflow_dispatch')
     
     environment:
@@ -486,7 +486,6 @@ jobs:
     
     steps:
       - name: Send Non-Production Status to Discord
-        if: vars.DISCORD_WEBHOOK_URL != '' || secrets.DISCORD_WEBHOOK_URL != ''
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
           SEC_STATUS: ${{ needs.security-scan-iac.result == 'success' && '✅ Passed' || needs.security-scan-iac.result == 'skipped' && '⭐️ Skipped' || '❌ Failed' }}
